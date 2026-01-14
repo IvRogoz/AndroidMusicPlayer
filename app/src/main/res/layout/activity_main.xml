@@ -24,6 +24,18 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
 
+        <ImageView
+            android:id="@+id/albumArtLarge"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:contentDescription="@string/album_art"
+            android:scaleType="centerCrop"
+            android:src="@android:drawable/ic_media_play"
+            app:layout_constraintBottom_toTopOf="@id/playerContainer"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
         <LinearLayout
             android:id="@+id/playerContainer"
             android:layout_width="0dp"
@@ -33,16 +45,7 @@
             android:padding="12dp"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent">
-
-            <ImageView
-                android:id="@+id/albumArtLarge"
-                android:layout_width="match_parent"
-                android:layout_height="344dp"
-                android:contentDescription="@string/album_art"
-                android:scaleType="centerCrop"
-                android:src="@android:drawable/ic_media_play" />
+            app:layout_constraintStart_toStartOf="parent">
 
             <TextView
                 android:id="@+id/trackTitle"

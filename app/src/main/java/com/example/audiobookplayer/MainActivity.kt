@@ -52,6 +52,10 @@ class MainActivity : AppCompatActivity() {
     private val selectFolderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val previousUri = preferences.getString(KEY_TREE_URI, null)
+            if (previousUri != uri.toString()) {
+                expandedFolders.clear()
+            }
             preferences.edit().putString(KEY_TREE_URI, uri.toString()).apply()
             loadAudioTree(uri)
         }
@@ -166,8 +170,6 @@ class MainActivity : AppCompatActivity() {
             } else {
                 emptyList()
             }
-            expandedFolders.clear()
-            collectFolderUris(rootNodes, expandedFolders)
             val lastTrackUri = preferences.getString(KEY_LAST_TRACK_URI, null)
             runOnUiThread {
                 treeRoots = rootNodes
@@ -212,15 +214,6 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
                 else -> null
-            }
-        }
-    }
-
-    private fun collectFolderUris(nodes: List<AudioTreeNode>, output: MutableSet<Uri>) {
-        nodes.forEach { node ->
-            if (node.isFolder) {
-                output.add(node.uri)
-                collectFolderUris(node.children, output)
             }
         }
     }

@@ -88,15 +88,6 @@ class MainActivity : AppCompatActivity() {
             binding.drawerLayout.openDrawer(GravityCompat.START)
         }
 
-        binding.seekButton.setOnClickListener {
-            seekToInput()
-        }
-
-        binding.seekInput.setOnEditorActionListener { _, _, _ ->
-            seekToInput()
-            true
-        }
-
         binding.playPauseButton.setOnClickListener {
             togglePlayback()
         }
@@ -305,15 +296,13 @@ class MainActivity : AppCompatActivity() {
         binding.currentTime.text = formatDuration(0L)
         binding.duration.text = formatDuration(audioFile.durationMs)
         binding.previewView.isEnabled = false
-        binding.seekInput.isEnabled = false
-        binding.seekButton.isEnabled = false
-        binding.seekInput.setText("")
         binding.playPauseButton.isEnabled = false
         binding.playPauseButton.setImageResource(android.R.drawable.ic_media_play)
         binding.playPauseButton.contentDescription = getString(R.string.play_button)
         binding.stopButton.isEnabled = false
         updateTrackNavigationButtons()
         binding.skipBackButton.isEnabled = false
+        binding.timeJumpButton.isEnabled = false
         binding.skipForwardButton.isEnabled = false
         loadAlbumArt(audioFile)
         preparePlayer(audioFile, restorePosition, autoPlay)
@@ -329,9 +318,6 @@ class MainActivity : AppCompatActivity() {
         binding.currentTime.text = formatDuration(0L)
         binding.duration.text = formatDuration(0L)
         binding.previewView.isEnabled = false
-        binding.seekInput.isEnabled = false
-        binding.seekButton.isEnabled = false
-        binding.seekInput.setText("")
         binding.playPauseButton.isEnabled = false
         binding.playPauseButton.setImageResource(android.R.drawable.ic_media_play)
         binding.playPauseButton.contentDescription = getString(R.string.play_button)
@@ -339,6 +325,7 @@ class MainActivity : AppCompatActivity() {
         binding.previousButton.isEnabled = false
         binding.nextButton.isEnabled = false
         binding.skipBackButton.isEnabled = false
+        binding.timeJumpButton.isEnabled = false
         binding.skipForwardButton.isEnabled = false
         binding.previewView.setProgress(0f)
     }
@@ -381,11 +368,10 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             binding.previewView.isEnabled = true
-            binding.seekInput.isEnabled = true
-            binding.seekButton.isEnabled = true
             binding.playPauseButton.isEnabled = true
             binding.stopButton.isEnabled = true
             binding.skipBackButton.isEnabled = true
+            binding.timeJumpButton.isEnabled = true
             binding.skipForwardButton.isEnabled = true
             updateTrackNavigationButtons()
             if (autoPlay) {
@@ -601,11 +587,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun seekToInput() {
-        val input = binding.seekInput.text?.toString()?.trim().orEmpty()
-        if (input.isBlank()) {
-            return
+    private fun showTimeJumpDialog() {
+        val editText = EditText(this).apply {
+            hint = getString(R.string.seek_hint)
+            inputType = InputType.TYPE_CLASS_TEXT
         }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.time_jump_title))
+            .setView(editText)
+            .setNegativeButton(getString(R.string.time_jump_cancel), null)
+            .setPositiveButton(getString(R.string.time_jump_confirm)) { _, _ ->
+                val value = editText.text?.toString()?.trim().orEmpty()
+                if (value.isNotBlank()) {
+                    seekToValue(value)
+                }
+            }
+            .show()
+    }
+
+    private fun seekToValue(input: String) {
         val player = mediaPlayer
         if (player == null || !isPrepared) {
             Toast.makeText(this, getString(R.string.seek_unavailable), Toast.LENGTH_SHORT).show()

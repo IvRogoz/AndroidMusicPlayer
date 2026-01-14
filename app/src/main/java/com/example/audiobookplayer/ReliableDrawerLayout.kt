@@ -69,13 +69,12 @@ class ReliableDrawerLayout @JvmOverloads constructor(
         private const val EDGE_SIZE_DP = 72
         private val CONTROL_VIEW_IDS = intArrayOf(
             R.id.previewView,
-            R.id.seekInput,
-            R.id.seekButton,
             R.id.playPauseButton,
             R.id.stopButton,
             R.id.previousButton,
             R.id.nextButton,
             R.id.skipBackButton,
+            R.id.timeJumpButton,
             R.id.skipForwardButton,
             R.id.autoplaySwitch,
             R.id.openDrawerButton

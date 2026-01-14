@@ -84,30 +84,6 @@
                     android:text="00:00" />
             </LinearLayout>
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:orientation="horizontal">
-
-                <EditText
-                    android:id="@+id/seekInput"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:hint="@string/seek_hint"
-                    android:imeOptions="actionDone"
-                    android:inputType="text"
-                    android:maxLines="1" />
-
-                <Button
-                    android:id="@+id/seekButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="@string/seek_go" />
-            </LinearLayout>
-
             <com.google.android.material.switchmaterial.SwitchMaterial
                 android:id="@+id/autoplaySwitch"
                 android:layout_width="match_parent"

@@ -29,7 +29,7 @@
             android:layout_width="0dp"
             android:layout_height="0dp"
             android:contentDescription="@string/album_art"
-            android:scaleType="centerCrop"
+            android:scaleType="fitCenter"
             android:src="@android:drawable/ic_media_play"
             app:layout_constraintBottom_toTopOf="@id/playerContainer"
             app:layout_constraintEnd_toEndOf="parent"
@@ -53,7 +53,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:ellipsize="end"
-                android:maxLines="2"
+                android:maxLines="1"
                 android:text="@string/no_track_selected"
                 android:textStyle="bold" />
 

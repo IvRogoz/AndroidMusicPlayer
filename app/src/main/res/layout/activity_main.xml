@@ -98,6 +98,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
+                android:background="@drawable/rounded_control_background"
                 android:orientation="horizontal">
 
                 <ImageButton
@@ -109,7 +110,7 @@
                     android:contentDescription="@string/back_button"
                     android:padding="8dp"
                     android:src="@android:drawable/ic_media_previous"
-                    android:tint="?attr/colorOnSurface" />
+                    android:tint="@android:color/white" />
 
                 <ImageButton
                     android:id="@+id/playPauseButton"
@@ -121,7 +122,7 @@
                     android:contentDescription="@string/play_button"
                     android:padding="8dp"
                     android:src="@android:drawable/ic_media_play"
-                    android:tint="?attr/colorOnSurface" />
+                    android:tint="@android:color/white" />
 
                 <ImageButton
                     android:id="@+id/stopButton"
@@ -133,7 +134,7 @@
                     android:contentDescription="@string/stop_button"
                     android:padding="8dp"
                     android:src="@drawable/ic_stop"
-                    android:tint="?attr/colorOnSurface" />
+                    android:tint="@android:color/white" />
 
                 <ImageButton
                     android:id="@+id/nextButton"
@@ -145,13 +146,14 @@
                     android:contentDescription="@string/next_button"
                     android:padding="8dp"
                     android:src="@android:drawable/ic_media_next"
-                    android:tint="?attr/colorOnSurface" />
+                    android:tint="@android:color/white" />
             </LinearLayout>
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
+                android:background="@drawable/rounded_control_background"
                 android:orientation="horizontal">
 
                 <ImageButton
@@ -163,7 +165,7 @@
                     android:contentDescription="@string/skip_back_default"
                     android:padding="6dp"
                     android:src="@android:drawable/ic_media_rew"
-                    android:tint="?attr/colorOnSurface" />
+                    android:tint="@android:color/white" />
 
                 <ImageButton
                     android:id="@+id/timeJumpButton"
@@ -175,7 +177,7 @@
                     android:contentDescription="@string/time_jump"
                     android:padding="6dp"
                     android:src="@android:drawable/ic_menu_recent_history"
-                    android:tint="?attr/colorOnSurface" />
+                    android:tint="@android:color/white" />
 
                 <ImageButton
                     android:id="@+id/skipForwardButton"
@@ -187,7 +189,7 @@
                     android:contentDescription="@string/skip_forward_default"
                     android:padding="6dp"
                     android:src="@android:drawable/ic_media_ff"
-                    android:tint="?attr/colorOnSurface" />
+                    android:tint="@android:color/white" />
             </LinearLayout>
         </LinearLayout>
 

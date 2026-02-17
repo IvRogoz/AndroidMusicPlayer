@@ -27,6 +27,16 @@
     <string name="time_jump_cancel">Cancel</string>
     <string name="time_jump_confirm">Seek</string>
     <string name="background_art">Background art</string>
+    <string name="bookmarks">Bookmarks</string>
+    <string name="open_bookmarks">Open bookmarks</string>
+    <string name="bookmark_missing_track">Bookmark file not found</string>
+    <string name="play_bookmark_clip">Play bookmark clip</string>
+    <string name="stop_bookmark_clip">Stop bookmark clip</string>
+    <string name="bookmark_track">Bookmark</string>
+    <string name="bookmark_saved">Bookmark saved</string>
+    <string name="bookmark_saved_clip">Bookmark and clip saved</string>
+    <string name="bookmark_saved_clip_failed">Bookmark saved, clip unavailable</string>
+    <string name="bookmark_unavailable">Select a track first</string>
     <string name="skip_back_default">Back 10s</string>
     <string name="skip_forward_default">Forward 10s</string>
     <string name="skip_back_format">Back %1$s</string>

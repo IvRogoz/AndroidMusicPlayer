@@ -1,9 +1,14 @@
 package com.example.audiobookplayer
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.media.AudioAttributes
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
+import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -20,7 +25,13 @@ import androidx.appcompat.widget.PopupMenu
 import androidx.core.view.GravityCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.room.Room
+import com.example.audiobookplayer.bookmarks.BookmarkDatabase
+import com.example.audiobookplayer.bookmarks.BookmarkEntity
 import com.example.audiobookplayer.databinding.ActivityMainBinding
+import java.io.File
+import java.io.FileOutputStream
+import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -28,9 +39,13 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var treeAdapter: AudioTreeAdapter
+    private lateinit var bookmarkAdapter: BookmarkTreeAdapter
     private lateinit var artLoader: AudioArtLoader
     private val preferences by lazy { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
     private val ioExecutor = Executors.newSingleThreadExecutor()
+    private val bookmarkDatabase by lazy {
+        Room.databaseBuilder(applicationContext, BookmarkDatabase::class.java, "bookmarks.db").build()
+    }
     private val progressHandler = Handler(Looper.getMainLooper())
 
     private var mediaPlayer: MediaPlayer? = null
@@ -41,6 +56,13 @@ class MainActivity : AppCompatActivity() {
     private var skipAmountMs: Long = DEFAULT_SKIP_MS
     private var treeRoots: List<AudioTreeNode> = emptyList()
     private val expandedFolders = mutableSetOf<Uri>()
+    private var bookmarkRoots: List<BookmarkTreeNode> = emptyList()
+    private val expandedBookmarkIds = mutableSetOf<String>()
+    private var currentCoverBitmap: Bitmap? = null
+    private var pendingBookmarkSeekMs: Long? = null
+    private var pendingBookmarkAutoPlay = false
+    private var bookmarkPlayer: MediaPlayer? = null
+    private var playingBookmarkId: Long? = null
 
     private val progressRunnable = object : Runnable {
         override fun run() {
@@ -77,9 +99,25 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        bookmarkAdapter = BookmarkTreeAdapter(
+            onNodeSelected = { node ->
+                if (node.isFolder) {
+                    toggleBookmarkFolder(node)
+                } else {
+                    node.bookmark?.let {
+                        openBookmark(it)
+                    }
+                }
+            },
+            onClipToggle = { bookmark ->
+                toggleBookmarkClip(bookmark)
+            }
+        )
 
         binding.folderTree.layoutManager = LinearLayoutManager(this)
         binding.folderTree.adapter = treeAdapter
+        binding.bookmarkList.layoutManager = LinearLayoutManager(this)
+        binding.bookmarkList.adapter = bookmarkAdapter
 
         skipAmountMs = preferences.getLong(KEY_SKIP_MS, DEFAULT_SKIP_MS)
         updateSkipButtonLabels()
@@ -90,6 +128,10 @@ class MainActivity : AppCompatActivity() {
 
         binding.openDrawerButton.setOnClickListener {
             binding.drawerLayout.openDrawer(GravityCompat.START)
+        }
+
+        binding.openBookmarksButton.setOnClickListener {
+            binding.drawerLayout.openDrawer(GravityCompat.END)
         }
 
         binding.playPauseButton.setOnClickListener {
@@ -135,15 +177,18 @@ class MainActivity : AppCompatActivity() {
             preferences.edit().putBoolean(KEY_AUTOPLAY, isChecked).apply()
         }
 
+        setupBookmarkActions()
         setupPreviewScrub()
         clearSelection()
         restoreLastFolder()
+        refreshBookmarks()
     }
 
     override fun onStop() {
         super.onStop()
         savePlaybackState()
         releasePlayer()
+        stopBookmarkClipPlayback()
     }
 
     override fun onDestroy() {
@@ -244,6 +289,168 @@ class MainActivity : AppCompatActivity() {
         updateTreeList()
     }
 
+    private fun refreshBookmarks() {
+        ioExecutor.execute {
+            val bookmarks = bookmarkDatabase.bookmarkDao().getAll()
+            val roots = buildBookmarkTree(bookmarks)
+            val rootIds = roots.map { it.id }.toSet()
+            runOnUiThread {
+                expandedBookmarkIds.retainAll(rootIds)
+                bookmarkRoots = roots
+                updateBookmarkList()
+            }
+        }
+    }
+
+    private fun buildBookmarkTree(bookmarks: List<BookmarkEntity>): List<BookmarkTreeNode> {
+        val grouped = bookmarks.groupBy { it.trackUri }
+        return grouped.map { (trackUri, items) ->
+            val sortedItems = items.sortedBy { it.timestampMs }
+            val bookTitle = sortedItems.firstOrNull()?.bookTitle?.ifBlank { trackUri } ?: trackUri
+            val coverPath = sortedItems.firstOrNull { it.coverImagePath != null }?.coverImagePath
+            val children = sortedItems.map { bookmark ->
+                BookmarkTreeNode(
+                    id = "bookmark:${bookmark.id}",
+                    title = formatBookmarkTitle(bookmark),
+                    depth = 1,
+                    isFolder = false,
+                    bookmark = bookmark
+                )
+            }
+            BookmarkTreeNode(
+                id = "book:$trackUri",
+                title = bookTitle,
+                depth = 0,
+                isFolder = true,
+                coverImagePath = coverPath,
+                children = children
+            )
+        }.sortedBy { it.title.lowercase(Locale.getDefault()) }
+    }
+
+    private fun updateBookmarkList() {
+        val visibleNodes = flattenBookmarkTree(bookmarkRoots, expandedBookmarkIds)
+        bookmarkAdapter.expandedIds = expandedBookmarkIds
+        bookmarkAdapter.playingBookmarkId = playingBookmarkId
+        bookmarkAdapter.submitList(visibleNodes)
+    }
+
+    private fun flattenBookmarkTree(
+        nodes: List<BookmarkTreeNode>,
+        expandedIds: Set<String>
+    ): List<BookmarkTreeNode> {
+        val visible = mutableListOf<BookmarkTreeNode>()
+        nodes.forEach { node ->
+            visible.add(node)
+            if (node.isFolder && expandedIds.contains(node.id)) {
+                visible.addAll(node.children)
+            }
+        }
+        return visible
+    }
+
+    private fun toggleBookmarkFolder(node: BookmarkTreeNode) {
+        if (expandedBookmarkIds.contains(node.id)) {
+            expandedBookmarkIds.remove(node.id)
+        } else {
+            expandedBookmarkIds.add(node.id)
+        }
+        updateBookmarkList()
+    }
+
+    private fun openBookmark(bookmark: BookmarkEntity) {
+        val trackUri = Uri.parse(bookmark.trackUri)
+        val audioFile = audioFiles.firstOrNull { it.uri == trackUri }
+        if (audioFile == null) {
+            Toast.makeText(this, getString(R.string.bookmark_missing_track), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val targetMs = bookmark.timestampMs.coerceAtLeast(0L)
+        if (currentFile?.uri == trackUri && isPrepared) {
+            val player = mediaPlayer
+            if (player != null) {
+                val durationMs = player.duration.toLong().coerceAtLeast(0L)
+                val clamped = targetMs.coerceIn(0L, durationMs)
+                player.seekTo(clamped.toInt())
+                if (!player.isPlaying) {
+                    player.start()
+                    startProgressUpdates()
+                }
+                updateProgress()
+                updatePlayPauseButton()
+            }
+            pendingBookmarkSeekMs = null
+            pendingBookmarkAutoPlay = false
+        } else {
+            pendingBookmarkSeekMs = targetMs
+            pendingBookmarkAutoPlay = true
+            selectTrack(audioFile, restorePosition = false, autoPlay = false, useBookmarkSeek = true)
+        }
+        closeBookmarksDrawer()
+    }
+
+    private fun toggleBookmarkClip(bookmark: BookmarkEntity) {
+        val clipPath = bookmark.audioClipPath
+        if (clipPath.isNullOrBlank()) {
+            return
+        }
+        val isPlaying = playingBookmarkId == bookmark.id
+        if (isPlaying) {
+            stopBookmarkClipPlayback()
+        } else {
+            startBookmarkClipPlayback(bookmark)
+        }
+    }
+
+    private fun startBookmarkClipPlayback(bookmark: BookmarkEntity) {
+        stopBookmarkClipPlayback()
+        val clipPath = bookmark.audioClipPath ?: return
+        val player = MediaPlayer()
+        bookmarkPlayer = player
+        playingBookmarkId = bookmark.id
+        updateBookmarkList()
+        try {
+            player.setDataSource(clipPath)
+            player.setOnCompletionListener {
+                stopBookmarkClipPlayback()
+            }
+            player.prepare()
+            player.start()
+        } catch (exception: Exception) {
+            stopBookmarkClipPlayback()
+        }
+    }
+
+    private fun stopBookmarkClipPlayback() {
+        bookmarkPlayer?.let { player ->
+            try {
+                if (player.isPlaying) {
+                    player.stop()
+                }
+            } catch (exception: Exception) {
+            }
+            try {
+                player.release()
+            } catch (exception: Exception) {
+            }
+        }
+        bookmarkPlayer = null
+        if (playingBookmarkId != null) {
+            playingBookmarkId = null
+            updateBookmarkList()
+        }
+    }
+
+    private fun formatBookmarkTitle(bookmark: BookmarkEntity): String {
+        val timestamp = formatDuration(bookmark.timestampMs)
+        val clipDurationMs = bookmark.clipDurationMs
+        return if (clipDurationMs != null && clipDurationMs > 0L) {
+            "$timestamp (+${clipDurationMs / 1000}s)"
+        } else {
+            timestamp
+        }
+    }
+
     private fun isAudioFile(file: DocumentFile): Boolean {
         val type = file.type
         if (type != null && type.startsWith("audio/")) {
@@ -272,7 +479,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun selectTrack(audioFile: AudioFile, restorePosition: Boolean, autoPlay: Boolean) {
+    private fun selectTrack(
+        audioFile: AudioFile,
+        restorePosition: Boolean,
+        autoPlay: Boolean,
+        useBookmarkSeek: Boolean = false
+    ) {
+        if (!useBookmarkSeek) {
+            pendingBookmarkSeekMs = null
+            pendingBookmarkAutoPlay = false
+        }
         if (currentFile?.uri == audioFile.uri) {
             if (autoPlay) {
                 togglePlayback()
@@ -283,6 +499,7 @@ class MainActivity : AppCompatActivity() {
         currentFile = audioFile
         currentFileIndex = audioFiles.indexOfFirst { it.uri == audioFile.uri }.takeIf { it >= 0 }
         treeAdapter.selectedUri = audioFile.uri
+        binding.bookmarkButton.isEnabled = true
         binding.trackTitle.text = audioFile.title
         binding.previewView.setWaveformSeed(audioFile.uri.hashCode())
         binding.previewView.setProgress(0f)
@@ -307,7 +524,13 @@ class MainActivity : AppCompatActivity() {
         treeAdapter.selectedUri = null
         binding.trackTitle.text = getString(R.string.no_track_selected)
         binding.albumArtLarge.setImageResource(android.R.drawable.ic_media_play)
-        binding.backgroundArt.setImageResource(android.R.drawable.ic_media_play)
+        binding.backgroundArt.setImageDrawable(null)
+        binding.backgroundArt.alpha = 0f
+        binding.backgroundTint.alpha = 0f
+        binding.bookmarkButton.isEnabled = false
+        currentCoverBitmap = null
+        pendingBookmarkSeekMs = null
+        pendingBookmarkAutoPlay = false
         binding.currentTime.text = formatDuration(0L)
         binding.duration.text = formatDuration(0L)
         binding.previewView.isEnabled = false
@@ -325,15 +548,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadAlbumArt(audioFile: AudioFile) {
         binding.albumArtLarge.setImageResource(android.R.drawable.ic_media_play)
-        binding.backgroundArt.setImageResource(android.R.drawable.ic_media_play)
+        binding.backgroundArt.setImageDrawable(null)
+        binding.backgroundArt.alpha = 0f
+        binding.backgroundTint.alpha = 0f
+        currentCoverBitmap = null
         artLoader.load(audioFile.uri, LARGE_ART_SIZE) { bitmap ->
             if (audioFile.uri == currentFile?.uri) {
                 if (bitmap != null) {
                     binding.albumArtLarge.setImageBitmap(bitmap)
                     binding.backgroundArt.setImageBitmap(bitmap)
+                    binding.backgroundArt.alpha = BACKGROUND_ART_ALPHA_WITH_ART
+                    binding.backgroundTint.alpha = BACKGROUND_TINT_ALPHA_WITH_ART
+                    currentCoverBitmap = bitmap
                 } else {
                     binding.albumArtLarge.setImageResource(android.R.drawable.ic_media_play)
-                    binding.backgroundArt.setImageResource(android.R.drawable.ic_media_play)
+                    binding.backgroundArt.setImageDrawable(null)
+                    binding.backgroundArt.alpha = 0f
+                    binding.backgroundTint.alpha = 0f
+                    currentCoverBitmap = null
                 }
             }
         }
@@ -354,7 +586,10 @@ class MainActivity : AppCompatActivity() {
             isPrepared = true
             val duration = preparedPlayer.duration
             binding.duration.text = formatDuration(duration.toLong())
-            if (restorePosition && audioFile.uri.toString() == preferences.getString(KEY_LAST_TRACK_URI, null)) {
+            val pendingSeekMs = pendingBookmarkSeekMs
+            if (pendingSeekMs == null && restorePosition &&
+                audioFile.uri.toString() == preferences.getString(KEY_LAST_TRACK_URI, null)
+            ) {
                 val resumePosition = preferences.getLong(KEY_LAST_POSITION, 0L).toInt()
                 if (resumePosition in 1 until duration) {
                     preparedPlayer.seekTo(resumePosition)
@@ -367,10 +602,21 @@ class MainActivity : AppCompatActivity() {
             binding.timeJumpButton.isEnabled = true
             binding.skipForwardButton.isEnabled = true
             updateTrackNavigationButtons()
-            if (autoPlay) {
+            if (pendingSeekMs != null) {
+                val clampedSeek = pendingSeekMs.coerceIn(0L, duration.toLong())
+                preparedPlayer.seekTo(clampedSeek.toInt())
+            }
+            val shouldAutoPlay = if (pendingSeekMs != null) {
+                pendingBookmarkAutoPlay
+            } else {
+                autoPlay
+            }
+            if (shouldAutoPlay) {
                 preparedPlayer.start()
                 startProgressUpdates()
             }
+            pendingBookmarkSeekMs = null
+            pendingBookmarkAutoPlay = false
             updateProgress()
             updatePlayPauseButton()
         }
@@ -475,6 +721,214 @@ class MainActivity : AppCompatActivity() {
         popup.show()
     }
 
+    private fun setupBookmarkActions() {
+        binding.bookmarkButton.setOnClickListener {
+            saveBookmark(null)
+        }
+        binding.bookmarkButton.setOnLongClickListener { view ->
+            showBookmarkClipMenu(view)
+            true
+        }
+    }
+
+    private fun showBookmarkClipMenu(anchor: View) {
+        val popup = PopupMenu(this, anchor)
+        BOOKMARK_CLIP_OPTIONS_MS.forEach { option ->
+            popup.menu.add(0, option.toInt(), 0, formatClipLabel(option))
+        }
+        popup.setOnMenuItemClickListener { item ->
+            saveBookmark(item.itemId.toLong())
+            true
+        }
+        popup.show()
+    }
+
+    private fun formatClipLabel(milliseconds: Long): String {
+        return "${milliseconds / 1000}s"
+    }
+
+    private fun saveBookmark(clipDurationMs: Long?) {
+        val audioFile = currentFile
+        if (audioFile == null) {
+            Toast.makeText(this, getString(R.string.bookmark_unavailable), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val positionMs = if (isPrepared) {
+            mediaPlayer?.currentPosition?.toLong() ?: 0L
+        } else {
+            0L
+        }
+        val createdAtMs = System.currentTimeMillis()
+        val coverBitmap = currentCoverBitmap
+        val availableDurationMs = if (audioFile.durationMs > 0L) {
+            (audioFile.durationMs - positionMs).coerceAtLeast(0L)
+        } else {
+            null
+        }
+        val resolvedClipDurationMs = clipDurationMs?.let { duration ->
+            availableDurationMs?.let { minOf(duration, it) } ?: duration
+        }
+        ioExecutor.execute {
+            val coverPath = saveCoverBitmap(coverBitmap, createdAtMs)
+            val clipPath = if (resolvedClipDurationMs != null && resolvedClipDurationMs > 0L) {
+                saveAudioClip(audioFile.uri, positionMs, resolvedClipDurationMs, createdAtMs)
+            } else {
+                null
+            }
+            val storedClipDurationMs = if (clipPath != null) resolvedClipDurationMs else null
+            val bookmark = BookmarkEntity(
+                bookTitle = audioFile.title,
+                trackUri = audioFile.uri.toString(),
+                timestampMs = positionMs,
+                createdAtMs = createdAtMs,
+                clipDurationMs = storedClipDurationMs,
+                audioClipPath = clipPath,
+                coverImagePath = coverPath
+            )
+            bookmarkDatabase.bookmarkDao().insert(bookmark)
+            val updatedRoots = buildBookmarkTree(bookmarkDatabase.bookmarkDao().getAll())
+            val updatedRootIds = updatedRoots.map { it.id }.toSet()
+            val messageRes = when {
+                clipDurationMs == null -> R.string.bookmark_saved
+                clipPath != null -> R.string.bookmark_saved_clip
+                else -> R.string.bookmark_saved_clip_failed
+            }
+            runOnUiThread {
+                expandedBookmarkIds.retainAll(updatedRootIds)
+                bookmarkRoots = updatedRoots
+                updateBookmarkList()
+                Toast.makeText(this, getString(messageRes), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun saveCoverBitmap(bitmap: Bitmap?, createdAtMs: Long): String? {
+        if (bitmap == null) {
+            return null
+        }
+        val directory = File(filesDir, "bookmarks/covers")
+        if (!directory.exists() && !directory.mkdirs()) {
+            return null
+        }
+        val coverFile = File(directory, "cover_${createdAtMs}.jpg")
+        return try {
+            FileOutputStream(coverFile).use { output ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
+            }
+            coverFile.absolutePath
+        } catch (exception: Exception) {
+            coverFile.delete()
+            null
+        }
+    }
+
+    private fun saveAudioClip(
+        sourceUri: Uri,
+        startMs: Long,
+        durationMs: Long,
+        createdAtMs: Long
+    ): String? {
+        val directory = File(filesDir, "bookmarks/audio")
+        if (!directory.exists() && !directory.mkdirs()) {
+            return null
+        }
+        val clipFile = File(directory, "clip_${createdAtMs}.m4a")
+        val saved = writeAudioClipToFile(sourceUri, startMs, durationMs, clipFile)
+        return if (saved) {
+            clipFile.absolutePath
+        } else {
+            clipFile.delete()
+            null
+        }
+    }
+
+    private fun writeAudioClipToFile(
+        sourceUri: Uri,
+        startMs: Long,
+        durationMs: Long,
+        outputFile: File
+    ): Boolean {
+        val extractor = MediaExtractor()
+        var muxer: MediaMuxer? = null
+        var started = false
+        var wroteSample = false
+        return try {
+            extractor.setDataSource(this, sourceUri, null)
+            var audioTrackIndex = -1
+            var audioFormat: MediaFormat? = null
+            for (index in 0 until extractor.trackCount) {
+                val trackFormat = extractor.getTrackFormat(index)
+                val mime = trackFormat.getString(MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("audio/")) {
+                    audioTrackIndex = index
+                    audioFormat = trackFormat
+                    break
+                }
+            }
+            if (audioTrackIndex == -1 || audioFormat == null) {
+                return false
+            }
+            val mime = audioFormat.getString(MediaFormat.KEY_MIME) ?: return false
+            if (mime !in BOOKMARK_CLIP_MIME_TYPES) {
+                return false
+            }
+            extractor.selectTrack(audioTrackIndex)
+            val startUs = startMs * 1000
+            val endUs = (startMs + durationMs) * 1000
+            extractor.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+
+            muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val muxerTrackIndex = muxer.addTrack(audioFormat)
+            muxer.start()
+            started = true
+
+            val maxInputSize = if (audioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
+            } else {
+                DEFAULT_CLIP_BUFFER_SIZE
+            }
+            val buffer = ByteBuffer.allocate(maxInputSize)
+            val bufferInfo = MediaCodec.BufferInfo()
+
+            while (true) {
+                bufferInfo.offset = 0
+                bufferInfo.size = extractor.readSampleData(buffer, 0)
+                if (bufferInfo.size < 0) {
+                    bufferInfo.size = 0
+                    break
+                }
+                val sampleTimeUs = extractor.sampleTime
+                if (sampleTimeUs < 0 || sampleTimeUs > endUs) {
+                    break
+                }
+                if (sampleTimeUs < startUs) {
+                    extractor.advance()
+                    continue
+                }
+                bufferInfo.presentationTimeUs = (sampleTimeUs - startUs).coerceAtLeast(0L)
+                bufferInfo.flags = extractor.sampleFlags
+                muxer.writeSampleData(muxerTrackIndex, buffer, bufferInfo)
+                wroteSample = true
+                extractor.advance()
+            }
+            wroteSample
+        } catch (exception: Exception) {
+            false
+        } finally {
+            if (started) {
+                try {
+                    muxer?.stop()
+                } catch (exception: Exception) {
+                }
+            }
+            try {
+                muxer?.release()
+            } catch (exception: Exception) {
+            }
+            extractor.release()
+        }
+    }
+
     private fun updateTrackNavigationButtons() {
         val index = currentFileIndex
         binding.previousButton.isEnabled = index != null && index > 0
@@ -538,6 +992,12 @@ class MainActivity : AppCompatActivity() {
     private fun closeDrawer() {
         if (binding.drawerLayout.isDrawerOpen(GravityCompat.START)) {
             binding.drawerLayout.closeDrawer(GravityCompat.START)
+        }
+    }
+
+    private fun closeBookmarksDrawer() {
+        if (binding.drawerLayout.isDrawerOpen(GravityCompat.END)) {
+            binding.drawerLayout.closeDrawer(GravityCompat.END)
         }
     }
 
@@ -642,6 +1102,11 @@ class MainActivity : AppCompatActivity() {
         private const val LARGE_ART_SIZE = 600
         private const val DEFAULT_SKIP_MS = 10_000L
         private const val ONE_MINUTE_MS = 60_000L
+        private const val BACKGROUND_ART_ALPHA_WITH_ART = 0.3f
+        private const val BACKGROUND_TINT_ALPHA_WITH_ART = 0.8f
+        private const val DEFAULT_CLIP_BUFFER_SIZE = 256 * 1024
+        private val BOOKMARK_CLIP_OPTIONS_MS = listOf(10_000L, 15_000L, 30_000L, 60_000L)
+        private val BOOKMARK_CLIP_MIME_TYPES = setOf("audio/mp4a-latm", "audio/aac")
         private val SKIP_OPTIONS_MS = listOf(10_000L, 30_000L, 60_000L, 300_000L)
         private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "m4b")
     }

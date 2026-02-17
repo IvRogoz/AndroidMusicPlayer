@@ -19,6 +19,7 @@ class ReliableDrawerLayout @JvmOverloads constructor(
     private val edgeSizePx = (EDGE_SIZE_DP * context.resources.displayMetrics.density).toInt()
     private val hitRect = Rect()
     private var edgeGestureActive = false
+    private var edgeFromRight = false
     private var initialX = 0f
     private var initialY = 0f
 
@@ -27,19 +28,30 @@ class ReliableDrawerLayout @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 initialX = event.x
                 initialY = event.y
-                edgeGestureActive = initialX <= edgeSizePx && !isTouchOnControl(initialX, initialY)
+                val width = width.toFloat()
+                val fromLeft = initialX <= edgeSizePx
+                val fromRight = width > 0f && initialX >= width - edgeSizePx
+                edgeGestureActive = (fromLeft || fromRight) && !isTouchOnControl(initialX, initialY)
+                edgeFromRight = fromRight
             }
             MotionEvent.ACTION_MOVE -> {
                 if (edgeGestureActive) {
                     val deltaX = event.x - initialX
                     val deltaY = abs(event.y - initialY)
-                    if (deltaX > touchSlop && deltaX > deltaY) {
+                    val horizontalSwipe = abs(deltaX) > touchSlop && abs(deltaX) > deltaY
+                    val correctDirection = if (edgeFromRight) {
+                        -deltaX > touchSlop
+                    } else {
+                        deltaX > touchSlop
+                    }
+                    if (horizontalSwipe && correctDirection) {
                         return true
                     }
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 edgeGestureActive = false
+                edgeFromRight = false
             }
         }
         return super.onInterceptTouchEvent(event)
@@ -77,7 +89,9 @@ class ReliableDrawerLayout @JvmOverloads constructor(
             R.id.timeJumpButton,
             R.id.skipForwardButton,
             R.id.autoplaySwitch,
-            R.id.openDrawerButton
+            R.id.openDrawerButton,
+            R.id.openBookmarksButton,
+            R.id.bookmarkButton
         )
     }
 }

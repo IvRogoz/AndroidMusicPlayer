@@ -1,5 +1,7 @@
 # AudioBookPlayer
 
+![AudioBookPlayer player](player.png)
+
 AudioBookPlayer is an Android app focused on long-form listening, especially audiobooks and spoken-word files stored in local folders. The app lets you choose a base folder through the system picker, scans it recursively, and presents your library as an expandable tree in the left drawer. You can browse folders, pick a track, and the player keeps track of your last selected file and playback position so it can resume later.
 
 The main screen is designed around large cover art. When embedded artwork is available, the app shows it on the cover and uses a blurred version in the background for context. When no artwork is available, the visual state stays clean and black. Playback controls include previous and next track, play and pause, stop, configurable skip intervals, direct timeline scrubbing, and a time-jump dialog for entering a target time in `mm:ss` or `hh:mm:ss` format.

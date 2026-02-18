@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/bookmarkItemRoot"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:clickable="true"
+    android:focusable="true"
+    android:orientation="horizontal"
+    android:paddingEnd="12dp"
+    android:paddingVertical="8dp">
+
+    <FrameLayout
+        android:layout_width="36dp"
+        android:layout_height="36dp">
+
+        <ImageView
+            android:id="@+id/icon"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:contentDescription="@string/album_art"
+            android:scaleType="centerCrop"
+            android:src="@drawable/ic_bookmark" />
+
+        <ImageView
+            android:id="@+id/expandIndicator"
+            android:layout_width="12dp"
+            android:layout_height="12dp"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="2dp"
+            android:contentDescription="@string/bookmarks"
+            android:src="@android:drawable/arrow_down_float"
+            android:tint="@android:color/white"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/title"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_weight="1"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textStyle="bold"
+        android:textColor="@android:color/white" />
+
+    <ImageButton
+        android:id="@+id/playToggle"
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:layout_marginStart="8dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/play_bookmark_clip"
+        android:padding="6dp"
+        android:src="@android:drawable/ic_media_play"
+        android:tint="@android:color/white"
+        android:visibility="gone" />
+
+</LinearLayout>

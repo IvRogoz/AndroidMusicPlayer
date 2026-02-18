@@ -1,8 +1,10 @@
 package com.example.audiobookplayer
 
+import android.content.ComponentName
 import android.content.Intent
 import android.graphics.Bitmap
-import android.media.AudioAttributes
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -10,9 +12,11 @@ import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.media.MediaMuxer
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.InputType
 import android.view.MotionEvent
 import android.view.View
@@ -26,6 +30,10 @@ import androidx.core.view.GravityCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.room.Room
+import android.support.v4.media.MediaBrowserCompat
+import android.support.v4.media.MediaMetadataCompat
+import android.support.v4.media.session.MediaControllerCompat
+import android.support.v4.media.session.PlaybackStateCompat
 import com.example.audiobookplayer.bookmarks.BookmarkDatabase
 import com.example.audiobookplayer.bookmarks.BookmarkEntity
 import com.example.audiobookplayer.databinding.ActivityMainBinding
@@ -41,15 +49,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var treeAdapter: AudioTreeAdapter
     private lateinit var bookmarkAdapter: BookmarkTreeAdapter
     private lateinit var artLoader: AudioArtLoader
-    private val preferences by lazy { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
+    private val preferences by lazy { getSharedPreferences(PlaybackPrefs.PREFS_NAME, MODE_PRIVATE) }
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private val bookmarkDatabase by lazy {
         Room.databaseBuilder(applicationContext, BookmarkDatabase::class.java, "bookmarks.db").build()
     }
     private val progressHandler = Handler(Looper.getMainLooper())
 
-    private var mediaPlayer: MediaPlayer? = null
+    private var mediaBrowser: MediaBrowserCompat? = null
+    private var mediaController: MediaControllerCompat? = null
+    private var playbackState: PlaybackStateCompat? = null
     private var isPrepared = false
+    private var currentDurationMs = 0L
     private var currentFile: AudioFile? = null
     private var audioFiles: List<AudioFile> = emptyList()
     private var currentFileIndex: Int? = null
@@ -63,6 +74,9 @@ class MainActivity : AppCompatActivity() {
     private var pendingBookmarkAutoPlay = false
     private var bookmarkPlayer: MediaPlayer? = null
     private var playingBookmarkId: Long? = null
+    private var pendingPlaybackFile: AudioFile? = null
+    private var pendingPlaybackRestore = false
+    private var pendingPlaybackAutoPlay = false
 
     private val progressRunnable = object : Runnable {
         override fun run() {
@@ -74,12 +88,103 @@ class MainActivity : AppCompatActivity() {
     private val selectFolderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            val previousUri = preferences.getString(KEY_TREE_URI, null)
+            val previousUri = preferences.getString(PlaybackPrefs.KEY_TREE_URI, null)
             if (previousUri != uri.toString()) {
                 expandedFolders.clear()
             }
-            preferences.edit().putString(KEY_TREE_URI, uri.toString()).apply()
+            preferences.edit().putString(PlaybackPrefs.KEY_TREE_URI, uri.toString()).apply()
             loadAudioTree(uri)
+        }
+    }
+
+    private val mediaControllerCallback = object : MediaControllerCompat.Callback() {
+        override fun onPlaybackStateChanged(state: PlaybackStateCompat?) {
+            playbackState = state
+            val prepared = state != null &&
+                state.state != PlaybackStateCompat.STATE_NONE &&
+                state.state != PlaybackStateCompat.STATE_BUFFERING
+            if (prepared != isPrepared) {
+                isPrepared = prepared
+                setPlaybackControlsEnabled(prepared)
+            }
+            if (state?.state == PlaybackStateCompat.STATE_PLAYING) {
+                startProgressUpdates()
+            } else {
+                stopProgressUpdates()
+            }
+            updateProgress()
+            updatePlayPauseButton()
+        }
+
+        override fun onMetadataChanged(metadata: MediaMetadataCompat?) {
+            val duration = metadata?.getLong(MediaMetadataCompat.METADATA_KEY_DURATION) ?: 0L
+            if (duration > 0L) {
+                currentDurationMs = duration
+                binding.duration.text = formatDuration(duration)
+            }
+            setPlaybackControlsEnabled(isPrepared)
+            updateProgress()
+        }
+
+        override fun onSessionEvent(event: String?, extras: Bundle?) {
+            if (event == PlaybackService.EVENT_PLAYBACK_COMPLETED) {
+                handlePlaybackCompleted()
+            }
+        }
+    }
+
+    private val mediaBrowserConnection = object : MediaBrowserCompat.ConnectionCallback() {
+        override fun onConnected() {
+            val browser = mediaBrowser ?: return
+            val controller = MediaControllerCompat(this@MainActivity, browser.sessionToken)
+            mediaController = controller
+            MediaControllerCompat.setMediaController(this@MainActivity, controller)
+            controller.registerCallback(mediaControllerCallback)
+            playbackState = controller.playbackState
+            val prepared = playbackState?.state != PlaybackStateCompat.STATE_NONE &&
+                playbackState?.state != PlaybackStateCompat.STATE_BUFFERING
+            isPrepared = prepared
+            setPlaybackControlsEnabled(prepared)
+            controller.metadata?.let { metadata ->
+                val duration = metadata.getLong(MediaMetadataCompat.METADATA_KEY_DURATION)
+                if (duration > 0L) {
+                    currentDurationMs = duration
+                    binding.duration.text = formatDuration(duration)
+                }
+            }
+            if (playbackState?.state == PlaybackStateCompat.STATE_PLAYING) {
+                startProgressUpdates()
+            } else {
+                stopProgressUpdates()
+            }
+            updatePlayPauseButton()
+            updateProgress()
+            val pendingFile = pendingPlaybackFile
+            if (pendingFile != null) {
+                pendingPlaybackFile = null
+                val restore = pendingPlaybackRestore
+                val autoPlay = pendingPlaybackAutoPlay
+                pendingPlaybackRestore = false
+                pendingPlaybackAutoPlay = false
+                preparePlayer(pendingFile, restore, autoPlay)
+            }
+        }
+
+        override fun onConnectionSuspended() {
+            mediaController?.unregisterCallback(mediaControllerCallback)
+            mediaController = null
+            playbackState = null
+            isPrepared = false
+            setPlaybackControlsEnabled(false)
+            stopProgressUpdates()
+        }
+
+        override fun onConnectionFailed() {
+            mediaController = null
+            playbackState = null
+            isPrepared = false
+            setPlaybackControlsEnabled(false)
+            stopProgressUpdates()
         }
     }
 
@@ -87,6 +192,14 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        mediaBrowser = MediaBrowserCompat(
+            this,
+            ComponentName(this, PlaybackService::class.java),
+            mediaBrowserConnection,
+            null
+        )
+        mediaBrowser?.connect()
 
         artLoader = AudioArtLoader(this)
         treeAdapter = AudioTreeAdapter(artLoader) { node ->
@@ -119,7 +232,7 @@ class MainActivity : AppCompatActivity() {
         binding.bookmarkList.layoutManager = LinearLayoutManager(this)
         binding.bookmarkList.adapter = bookmarkAdapter
 
-        skipAmountMs = preferences.getLong(KEY_SKIP_MS, DEFAULT_SKIP_MS)
+        skipAmountMs = preferences.getLong(PlaybackPrefs.KEY_SKIP_MS, DEFAULT_SKIP_MS)
         updateSkipButtonLabels()
 
         binding.selectFolderButton.setOnClickListener {
@@ -172,9 +285,9 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
-        binding.autoplaySwitch.isChecked = preferences.getBoolean(KEY_AUTOPLAY, false)
+        binding.autoplaySwitch.isChecked = preferences.getBoolean(PlaybackPrefs.KEY_AUTOPLAY, false)
         binding.autoplaySwitch.setOnCheckedChangeListener { _, isChecked ->
-            preferences.edit().putBoolean(KEY_AUTOPLAY, isChecked).apply()
+            preferences.edit().putBoolean(PlaybackPrefs.KEY_AUTOPLAY, isChecked).apply()
         }
 
         setupBookmarkActions()
@@ -184,20 +297,34 @@ class MainActivity : AppCompatActivity() {
         refreshBookmarks()
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (playbackState?.state == PlaybackStateCompat.STATE_PLAYING) {
+            startProgressUpdates()
+        }
+        updateProgress()
+        updatePlayPauseButton()
+    }
+
     override fun onStop() {
         super.onStop()
         savePlaybackState()
-        releasePlayer()
+        stopProgressUpdates()
         stopBookmarkClipPlayback()
     }
 
     override fun onDestroy() {
+        mediaController?.unregisterCallback(mediaControllerCallback)
+        mediaController = null
+        playbackState = null
+        mediaBrowser?.disconnect()
+        mediaBrowser = null
         super.onDestroy()
         ioExecutor.shutdown()
     }
 
     private fun restoreLastFolder() {
-        val uriString = preferences.getString(KEY_TREE_URI, null)
+        val uriString = preferences.getString(PlaybackPrefs.KEY_TREE_URI, null)
         if (uriString != null) {
             loadAudioTree(Uri.parse(uriString))
         } else {
@@ -215,7 +342,7 @@ class MainActivity : AppCompatActivity() {
             } else {
                 emptyList()
             }
-            val lastTrackUri = preferences.getString(KEY_LAST_TRACK_URI, null)
+            val lastTrackUri = preferences.getString(PlaybackPrefs.KEY_LAST_TRACK_URI, null)
             runOnUiThread {
                 treeRoots = rootNodes
                 updateTreeList()
@@ -367,17 +494,12 @@ class MainActivity : AppCompatActivity() {
         }
         val targetMs = bookmark.timestampMs.coerceAtLeast(0L)
         if (currentFile?.uri == trackUri && isPrepared) {
-            val player = mediaPlayer
-            if (player != null) {
-                val durationMs = player.duration.toLong().coerceAtLeast(0L)
+            val controller = mediaController
+            if (controller != null) {
+                val durationMs = currentDurationMs.coerceAtLeast(0L)
                 val clamped = targetMs.coerceIn(0L, durationMs)
-                player.seekTo(clamped.toInt())
-                if (!player.isPlaying) {
-                    player.start()
-                    startProgressUpdates()
-                }
-                updateProgress()
-                updatePlayPauseButton()
+                controller.transportControls.seekTo(clamped)
+                controller.transportControls.play()
             }
             pendingBookmarkSeekMs = null
             pendingBookmarkAutoPlay = false
@@ -504,16 +626,22 @@ class MainActivity : AppCompatActivity() {
         binding.previewView.setWaveformSeed(audioFile.uri.hashCode())
         binding.previewView.setProgress(0f)
         binding.currentTime.text = formatDuration(0L)
+        currentDurationMs = audioFile.durationMs
         binding.duration.text = formatDuration(audioFile.durationMs)
         binding.previewView.isEnabled = false
         binding.playPauseButton.isEnabled = false
         binding.playPauseButton.setImageResource(android.R.drawable.ic_media_play)
         binding.playPauseButton.contentDescription = getString(R.string.play_button)
         binding.stopButton.isEnabled = false
+        isPrepared = false
         updateTrackNavigationButtons()
         binding.skipBackButton.isEnabled = false
         binding.timeJumpButton.isEnabled = false
         binding.skipForwardButton.isEnabled = false
+        preferences.edit()
+            .putString(PlaybackPrefs.KEY_LAST_TRACK_URI, audioFile.uri.toString())
+            .putString(PlaybackPrefs.KEY_LAST_TRACK_TITLE, audioFile.title)
+            .apply()
         loadAlbumArt(audioFile)
         preparePlayer(audioFile, restorePosition, autoPlay)
     }
@@ -523,14 +651,20 @@ class MainActivity : AppCompatActivity() {
         currentFileIndex = null
         treeAdapter.selectedUri = null
         binding.trackTitle.text = getString(R.string.no_track_selected)
-        binding.albumArtLarge.setImageResource(android.R.drawable.ic_media_play)
+        binding.albumArtLarge.setImageDrawable(null)
         binding.backgroundArt.setImageDrawable(null)
+        clearBackgroundBlur()
         binding.backgroundArt.alpha = 0f
         binding.backgroundTint.alpha = 0f
         binding.bookmarkButton.isEnabled = false
         currentCoverBitmap = null
         pendingBookmarkSeekMs = null
         pendingBookmarkAutoPlay = false
+        isPrepared = false
+        currentDurationMs = 0L
+        pendingPlaybackFile = null
+        pendingPlaybackRestore = false
+        pendingPlaybackAutoPlay = false
         binding.currentTime.text = formatDuration(0L)
         binding.duration.text = formatDuration(0L)
         binding.previewView.isEnabled = false
@@ -544,11 +678,13 @@ class MainActivity : AppCompatActivity() {
         binding.timeJumpButton.isEnabled = false
         binding.skipForwardButton.isEnabled = false
         binding.previewView.setProgress(0f)
+        stopProgressUpdates()
     }
 
     private fun loadAlbumArt(audioFile: AudioFile) {
-        binding.albumArtLarge.setImageResource(android.R.drawable.ic_media_play)
+        binding.albumArtLarge.setImageDrawable(null)
         binding.backgroundArt.setImageDrawable(null)
+        clearBackgroundBlur()
         binding.backgroundArt.alpha = 0f
         binding.backgroundTint.alpha = 0f
         currentCoverBitmap = null
@@ -557,12 +693,14 @@ class MainActivity : AppCompatActivity() {
                 if (bitmap != null) {
                     binding.albumArtLarge.setImageBitmap(bitmap)
                     binding.backgroundArt.setImageBitmap(bitmap)
+                    applyBackgroundBlur()
                     binding.backgroundArt.alpha = BACKGROUND_ART_ALPHA_WITH_ART
-                    binding.backgroundTint.alpha = BACKGROUND_TINT_ALPHA_WITH_ART
+                    binding.backgroundTint.alpha = BACKGROUND_DIM_ALPHA_WITH_ART
                     currentCoverBitmap = bitmap
                 } else {
-                    binding.albumArtLarge.setImageResource(android.R.drawable.ic_media_play)
+                    binding.albumArtLarge.setImageDrawable(null)
                     binding.backgroundArt.setImageDrawable(null)
+                    clearBackgroundBlur()
                     binding.backgroundArt.alpha = 0f
                     binding.backgroundTint.alpha = 0f
                     currentCoverBitmap = null
@@ -571,100 +709,77 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyBackgroundBlur() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            binding.backgroundArt.setRenderEffect(
+                RenderEffect.createBlurEffect(
+                    BACKGROUND_BLUR_RADIUS,
+                    BACKGROUND_BLUR_RADIUS,
+                    Shader.TileMode.CLAMP
+                )
+            )
+        }
+    }
+
+    private fun clearBackgroundBlur() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            binding.backgroundArt.setRenderEffect(null)
+        }
+    }
+
     private fun preparePlayer(audioFile: AudioFile, restorePosition: Boolean, autoPlay: Boolean) {
-        releasePlayer()
-        val player = MediaPlayer()
-        mediaPlayer = player
+        val controller = mediaController
+        if (controller == null) {
+            pendingPlaybackFile = audioFile
+            pendingPlaybackRestore = restorePosition
+            pendingPlaybackAutoPlay = autoPlay
+            return
+        }
         isPrepared = false
-        player.setAudioAttributes(
-            AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build()
-        )
-        player.setOnPreparedListener { preparedPlayer ->
-            isPrepared = true
-            val duration = preparedPlayer.duration
-            binding.duration.text = formatDuration(duration.toLong())
-            val pendingSeekMs = pendingBookmarkSeekMs
-            if (pendingSeekMs == null && restorePosition &&
-                audioFile.uri.toString() == preferences.getString(KEY_LAST_TRACK_URI, null)
-            ) {
-                val resumePosition = preferences.getLong(KEY_LAST_POSITION, 0L).toInt()
-                if (resumePosition in 1 until duration) {
-                    preparedPlayer.seekTo(resumePosition)
-                }
-            }
-            binding.previewView.isEnabled = true
-            binding.playPauseButton.isEnabled = true
-            binding.stopButton.isEnabled = true
-            binding.skipBackButton.isEnabled = true
-            binding.timeJumpButton.isEnabled = true
-            binding.skipForwardButton.isEnabled = true
-            updateTrackNavigationButtons()
+        setPlaybackControlsEnabled(false)
+        currentDurationMs = audioFile.durationMs
+        binding.duration.text = formatDuration(currentDurationMs)
+        val pendingSeekMs = pendingBookmarkSeekMs
+        val extras = Bundle().apply {
+            putString(PlaybackService.EXTRA_TRACK_TITLE, audioFile.title)
+            putBoolean(PlaybackService.EXTRA_RESTORE_POSITION, restorePosition)
             if (pendingSeekMs != null) {
-                val clampedSeek = pendingSeekMs.coerceIn(0L, duration.toLong())
-                preparedPlayer.seekTo(clampedSeek.toInt())
-            }
-            val shouldAutoPlay = if (pendingSeekMs != null) {
-                pendingBookmarkAutoPlay
-            } else {
-                autoPlay
-            }
-            if (shouldAutoPlay) {
-                preparedPlayer.start()
-                startProgressUpdates()
-            }
-            pendingBookmarkSeekMs = null
-            pendingBookmarkAutoPlay = false
-            updateProgress()
-            updatePlayPauseButton()
-        }
-        player.setOnCompletionListener {
-            savePlaybackState(true)
-            stopProgressUpdates()
-            if (binding.autoplaySwitch.isChecked) {
-                playNextTrack()
-            } else {
-                mediaPlayer?.seekTo(0)
-                updateProgress()
-                updatePlayPauseButton()
+                putLong(PlaybackService.EXTRA_SEEK_POSITION_MS, pendingSeekMs)
             }
         }
-        player.setOnErrorListener { _, _, _ ->
-            releasePlayer()
-            true
+        val shouldAutoPlay = if (pendingSeekMs != null) {
+            pendingBookmarkAutoPlay
+        } else {
+            autoPlay
         }
-        player.setDataSource(this, audioFile.uri)
-        player.prepareAsync()
+        if (shouldAutoPlay) {
+            controller.transportControls.playFromUri(audioFile.uri, extras)
+        } else {
+            controller.transportControls.prepareFromUri(audioFile.uri, extras)
+        }
+        pendingBookmarkSeekMs = null
+        pendingBookmarkAutoPlay = false
     }
 
     private fun togglePlayback() {
-        val player = mediaPlayer
-        if (player == null || !isPrepared) {
+        val controller = mediaController
+        if (controller == null || !isPrepared) {
             return
         }
-        if (player.isPlaying) {
-            player.pause()
-            stopProgressUpdates()
-            updateProgress()
+        val state = controller.playbackState?.state ?: PlaybackStateCompat.STATE_NONE
+        if (state == PlaybackStateCompat.STATE_PLAYING) {
+            controller.transportControls.pause()
         } else {
-            player.start()
-            startProgressUpdates()
+            controller.transportControls.play()
         }
-        updatePlayPauseButton()
     }
 
     private fun stopPlayback() {
-        val player = mediaPlayer ?: return
+        val controller = mediaController ?: return
         if (!isPrepared) {
             return
         }
-        player.pause()
-        player.seekTo(0)
-        stopProgressUpdates()
-        updateProgress()
-        updatePlayPauseButton()
+        controller.transportControls.stop()
         savePlaybackState(true)
     }
 
@@ -683,21 +798,19 @@ class MainActivity : AppCompatActivity() {
         if (previousIndex in audioFiles.indices) {
             selectTrack(audioFiles[previousIndex], restorePosition = false, autoPlay = true)
         } else {
-            mediaPlayer?.seekTo(0)
-            updateProgress()
-            updatePlayPauseButton()
+            mediaController?.transportControls?.seekTo(0L)
         }
     }
 
     private fun skipBy(deltaMs: Long) {
-        val player = mediaPlayer ?: return
+        val controller = mediaController ?: return
         if (!isPrepared) {
             return
         }
-        val current = player.currentPosition.toLong()
-        val duration = player.duration.toLong()
-        val target = (current + deltaMs).coerceIn(0, duration)
-        player.seekTo(target.toInt())
+        val current = getCurrentPlaybackPosition()
+        val duration = currentDurationMs.coerceAtLeast(0L)
+        val target = (current + deltaMs).coerceIn(0L, duration)
+        controller.transportControls.seekTo(target)
         updateProgress()
     }
 
@@ -714,7 +827,7 @@ class MainActivity : AppCompatActivity() {
         }
         popup.setOnMenuItemClickListener { item ->
             skipAmountMs = item.itemId.toLong()
-            preferences.edit().putLong(KEY_SKIP_MS, skipAmountMs).apply()
+            preferences.edit().putLong(PlaybackPrefs.KEY_SKIP_MS, skipAmountMs).apply()
             updateSkipButtonLabels()
             true
         }
@@ -754,14 +867,19 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val positionMs = if (isPrepared) {
-            mediaPlayer?.currentPosition?.toLong() ?: 0L
+            getCurrentPlaybackPosition()
         } else {
             0L
         }
         val createdAtMs = System.currentTimeMillis()
         val coverBitmap = currentCoverBitmap
-        val availableDurationMs = if (audioFile.durationMs > 0L) {
-            (audioFile.durationMs - positionMs).coerceAtLeast(0L)
+        val trackDurationMs = if (audioFile.durationMs > 0L) {
+            audioFile.durationMs
+        } else {
+            currentDurationMs
+        }
+        val availableDurationMs = if (trackDurationMs > 0L) {
+            (trackDurationMs - positionMs).coerceAtLeast(0L)
         } else {
             null
         }
@@ -944,7 +1062,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updatePlayPauseButton() {
-        val isPlaying = mediaPlayer?.isPlaying == true
+        val isPlaying = playbackState?.state == PlaybackStateCompat.STATE_PLAYING
         if (isPlaying) {
             binding.playPauseButton.setImageResource(android.R.drawable.ic_media_pause)
             binding.playPauseButton.contentDescription = getString(R.string.pause_button)
@@ -955,16 +1073,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateProgress() {
-        val player = mediaPlayer
-        if (player == null || !isPrepared) {
+        if (!isPrepared) {
             binding.currentTime.text = formatDuration(0L)
             binding.previewView.setProgress(0f)
             return
         }
-        val position = player.currentPosition
-        val duration = maxOf(player.duration, 1)
-        binding.currentTime.text = formatDuration(position.toLong())
-        binding.previewView.setProgress(position.toFloat() / duration)
+        val position = getCurrentPlaybackPosition()
+        val duration = maxOf(currentDurationMs, 1L)
+        val clamped = position.coerceIn(0L, duration)
+        binding.currentTime.text = formatDuration(clamped)
+        binding.previewView.setProgress(clamped.toFloat() / duration.toFloat())
     }
 
     private fun startProgressUpdates() {
@@ -976,16 +1094,52 @@ class MainActivity : AppCompatActivity() {
         progressHandler.removeCallbacks(progressRunnable)
     }
 
+    private fun getCurrentPlaybackPosition(): Long {
+        val state = playbackState ?: return 0L
+        val position = state.position
+        return if (state.state == PlaybackStateCompat.STATE_PLAYING) {
+            val elapsed = SystemClock.elapsedRealtime() - state.lastPositionUpdateTime
+            (position + elapsed * state.playbackSpeed).toLong().coerceAtLeast(0L)
+        } else {
+            position
+        }
+    }
+
+    private fun setPlaybackControlsEnabled(enabled: Boolean) {
+        binding.previewView.isEnabled = enabled && currentDurationMs > 0L
+        binding.playPauseButton.isEnabled = enabled
+        binding.stopButton.isEnabled = enabled
+        binding.skipBackButton.isEnabled = enabled
+        binding.timeJumpButton.isEnabled = enabled
+        binding.skipForwardButton.isEnabled = enabled
+        updateTrackNavigationButtons()
+    }
+
+    private fun handlePlaybackCompleted() {
+        savePlaybackState(true)
+        stopProgressUpdates()
+        if (binding.autoplaySwitch.isChecked) {
+            playNextTrack()
+        } else {
+            updateProgress()
+            updatePlayPauseButton()
+        }
+    }
+
     private fun savePlaybackState(resetPosition: Boolean = false) {
         val currentUri = currentFile?.uri?.toString() ?: return
+        if (!resetPosition && !isPrepared) {
+            return
+        }
         val position = if (resetPosition) {
             0L
         } else {
-            mediaPlayer?.currentPosition?.toLong() ?: 0L
+            getCurrentPlaybackPosition()
         }
         preferences.edit()
-            .putString(KEY_LAST_TRACK_URI, currentUri)
-            .putLong(KEY_LAST_POSITION, position)
+            .putString(PlaybackPrefs.KEY_LAST_TRACK_URI, currentUri)
+            .putLong(PlaybackPrefs.KEY_LAST_POSITION, position)
+            .putString(PlaybackPrefs.KEY_LAST_TRACK_TITLE, currentFile?.title)
             .apply()
     }
 
@@ -1001,17 +1155,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun releasePlayer() {
-        stopProgressUpdates()
-        mediaPlayer?.release()
-        mediaPlayer = null
-        isPrepared = false
-    }
-
     private fun setupPreviewScrub() {
         binding.previewView.setOnTouchListener { view, event ->
-            val player = mediaPlayer
-            if (player == null || !isPrepared || !binding.previewView.isEnabled) {
+            val controller = mediaController
+            if (controller == null || !isPrepared || !binding.previewView.isEnabled) {
                 return@setOnTouchListener false
             }
             val width = view.width
@@ -1019,17 +1166,17 @@ class MainActivity : AppCompatActivity() {
                 return@setOnTouchListener false
             }
             val ratio = (event.x / width).coerceIn(0f, 1f)
-            val target = (player.duration * ratio).toInt()
+            val target = (currentDurationMs * ratio).toLong()
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                     stopProgressUpdates()
                     binding.previewView.setProgress(ratio)
-                    binding.currentTime.text = formatDuration(target.toLong())
+                    binding.currentTime.text = formatDuration(target)
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    player.seekTo(target)
-                    if (player.isPlaying) {
+                    controller.transportControls.seekTo(target)
+                    if (playbackState?.state == PlaybackStateCompat.STATE_PLAYING) {
                         startProgressUpdates()
                     }
                     updateProgress()
@@ -1059,8 +1206,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun seekToValue(input: String) {
-        val player = mediaPlayer
-        if (player == null || !isPrepared) {
+        val controller = mediaController
+        if (controller == null || !isPrepared) {
             Toast.makeText(this, getString(R.string.seek_unavailable), Toast.LENGTH_SHORT).show()
             return
         }
@@ -1069,9 +1216,9 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, getString(R.string.seek_invalid), Toast.LENGTH_SHORT).show()
             return
         }
-        val target = millis.coerceIn(0L, player.duration.toLong())
-        player.seekTo(target.toInt())
-        if (player.isPlaying) {
+        val target = millis.coerceIn(0L, currentDurationMs)
+        controller.transportControls.seekTo(target)
+        if (playbackState?.state == PlaybackStateCompat.STATE_PLAYING) {
             startProgressUpdates()
         }
         updateProgress()
@@ -1092,18 +1239,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val PREFS_NAME = "audio_player_prefs"
-        private const val KEY_TREE_URI = "tree_uri"
-        private const val KEY_LAST_TRACK_URI = "last_track_uri"
-        private const val KEY_LAST_POSITION = "last_position"
-        private const val KEY_AUTOPLAY = "autoplay_next"
-        private const val KEY_SKIP_MS = "skip_ms"
         private const val PROGRESS_UPDATE_MS = 500L
         private const val LARGE_ART_SIZE = 600
         private const val DEFAULT_SKIP_MS = 10_000L
         private const val ONE_MINUTE_MS = 60_000L
-        private const val BACKGROUND_ART_ALPHA_WITH_ART = 0.3f
-        private const val BACKGROUND_TINT_ALPHA_WITH_ART = 0.8f
+        private const val BACKGROUND_ART_ALPHA_WITH_ART = 0.9f
+        private const val BACKGROUND_DIM_ALPHA_WITH_ART = 0.25f
+        private const val BACKGROUND_BLUR_RADIUS = 64f
         private const val DEFAULT_CLIP_BUFFER_SIZE = 256 * 1024
         private val BOOKMARK_CLIP_OPTIONS_MS = listOf(10_000L, 15_000L, 30_000L, 60_000L)
         private val BOOKMARK_CLIP_MIME_TYPES = setOf("audio/mp4a-latm", "audio/aac")

@@ -37,6 +37,8 @@
     <string name="bookmark_saved_clip">Bookmark and clip saved</string>
     <string name="bookmark_saved_clip_failed">Bookmark saved, clip unavailable</string>
     <string name="bookmark_unavailable">Select a track first</string>
+    <string name="playback_channel_name">Playback</string>
+    <string name="playback_channel_description">Background audiobook playback controls</string>
     <string name="skip_back_default">Back 10s</string>
     <string name="skip_forward_default">Forward 10s</string>
     <string name="skip_back_format">Back %1$s</string>

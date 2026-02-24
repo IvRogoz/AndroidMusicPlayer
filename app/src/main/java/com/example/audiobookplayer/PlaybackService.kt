@@ -38,6 +38,14 @@ class PlaybackService : MediaBrowserServiceCompat() {
     private var isForeground = false
     private val artExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val positionSaveRunnable = object : Runnable {
+        override fun run() {
+            persistCurrentPosition()
+            if (isPrepared && mediaPlayer?.isPlaying == true) {
+                mainHandler.postDelayed(this, POSITION_SAVE_INTERVAL_MS)
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -73,12 +81,19 @@ class PlaybackService : MediaBrowserServiceCompat() {
     }
 
     override fun onDestroy() {
+        stopPositionPersistence()
+        persistCurrentPosition()
         stopForegroundNow()
         NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID)
         artExecutor.shutdownNow()
         releasePlayer()
         mediaSession.release()
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        persistCurrentPosition()
+        super.onTaskRemoved(rootIntent)
     }
 
     private val sessionCallback = object : MediaSessionCompat.Callback() {
@@ -94,6 +109,8 @@ class PlaybackService : MediaBrowserServiceCompat() {
                     putBoolean(EXTRA_RESTORE_POSITION, true)
                 }
                 prepareFromUri(Uri.parse(lastUri), extras, playWhenReady = true)
+            } else {
+                mediaSession.sendSessionEvent(EVENT_PLAYBACK_ERROR, null)
             }
         }
 
@@ -113,6 +130,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
             if (player.isPlaying) {
                 player.pause()
             }
+            stopPositionPersistence()
             savePlaybackPosition(player.currentPosition.toLong())
             updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, player.currentPosition.toLong())
         }
@@ -125,9 +143,11 @@ class PlaybackService : MediaBrowserServiceCompat() {
                     player.seekTo(0)
                 } catch (exception: Exception) {
                 }
+                stopPositionPersistence()
                 savePlaybackPosition(0L)
                 updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, 0L)
             } else {
+                stopPositionPersistence()
                 updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, 0L)
             }
         }
@@ -189,13 +209,16 @@ class PlaybackService : MediaBrowserServiceCompat() {
             }
         }
         player.setOnCompletionListener {
+            stopPositionPersistence()
             savePlaybackPosition(0L)
             updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, 0L)
             mediaSession.sendSessionEvent(EVENT_PLAYBACK_COMPLETED, null)
         }
         player.setOnErrorListener { _, _, _ ->
+            stopPositionPersistence()
             releasePlayer()
             updatePlaybackState(PlaybackStateCompat.STATE_NONE, 0L)
+            mediaSession.sendSessionEvent(EVENT_PLAYBACK_ERROR, null)
             true
         }
         try {
@@ -204,8 +227,10 @@ class PlaybackService : MediaBrowserServiceCompat() {
             updatePlaybackState(PlaybackStateCompat.STATE_BUFFERING, 0L)
             saveCurrentTrack(uri, currentTitle)
         } catch (exception: Exception) {
+            stopPositionPersistence()
             releasePlayer()
             updatePlaybackState(PlaybackStateCompat.STATE_NONE, 0L)
+            mediaSession.sendSessionEvent(EVENT_PLAYBACK_ERROR, null)
         }
     }
 
@@ -217,7 +242,25 @@ class PlaybackService : MediaBrowserServiceCompat() {
         if (!player.isPlaying) {
             player.start()
         }
+        startPositionPersistence()
         updatePlaybackState(PlaybackStateCompat.STATE_PLAYING, player.currentPosition.toLong())
+    }
+
+    private fun startPositionPersistence() {
+        mainHandler.removeCallbacks(positionSaveRunnable)
+        mainHandler.post(positionSaveRunnable)
+    }
+
+    private fun stopPositionPersistence() {
+        mainHandler.removeCallbacks(positionSaveRunnable)
+    }
+
+    private fun persistCurrentPosition() {
+        val player = mediaPlayer ?: return
+        if (!isPrepared) {
+            return
+        }
+        savePlaybackPosition(player.currentPosition.toLong())
     }
 
     private fun updatePlaybackState(state: Int, position: Long) {
@@ -333,6 +376,8 @@ class PlaybackService : MediaBrowserServiceCompat() {
     }
 
     private fun releasePlayer() {
+        stopPositionPersistence()
+        persistCurrentPosition()
         mediaPlayer?.release()
         mediaPlayer = null
         isPrepared = false
@@ -439,10 +484,12 @@ class PlaybackService : MediaBrowserServiceCompat() {
         const val EXTRA_RESTORE_POSITION = "com.example.audiobookplayer.extra.RESTORE_POSITION"
         const val EXTRA_SEEK_POSITION_MS = "com.example.audiobookplayer.extra.SEEK_POSITION_MS"
         const val EVENT_PLAYBACK_COMPLETED = "com.example.audiobookplayer.event.PLAYBACK_COMPLETED"
+        const val EVENT_PLAYBACK_ERROR = "com.example.audiobookplayer.event.PLAYBACK_ERROR"
         private const val ROOT_ID = "root"
         private const val NOTIFICATION_CHANNEL_ID = "playback"
         private const val NOTIFICATION_ID = 1001
         private const val CONTENT_INTENT_REQUEST_CODE = 1002
         private const val ART_TARGET_SIZE = 512
+        private const val POSITION_SAVE_INTERVAL_MS = 2_000L
     }
 }

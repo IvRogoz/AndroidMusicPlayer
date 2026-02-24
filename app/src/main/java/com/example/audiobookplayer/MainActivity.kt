@@ -127,8 +127,15 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onSessionEvent(event: String?, extras: Bundle?) {
-            if (event == PlaybackService.EVENT_PLAYBACK_COMPLETED) {
-                handlePlaybackCompleted()
+            when (event) {
+                PlaybackService.EVENT_PLAYBACK_COMPLETED -> handlePlaybackCompleted()
+                PlaybackService.EVENT_PLAYBACK_ERROR -> {
+                    Toast.makeText(
+                        this@MainActivity,
+                        getString(R.string.playback_resume_failed),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
         }
     }
@@ -343,11 +350,12 @@ class MainActivity : AppCompatActivity() {
                 emptyList()
             }
             val lastTrackUri = preferences.getString(PlaybackPrefs.KEY_LAST_TRACK_URI, null)
+            val lastTrackTitle = preferences.getString(PlaybackPrefs.KEY_LAST_TRACK_TITLE, null)
             runOnUiThread {
                 treeRoots = rootNodes
                 updateTreeList()
                 audioFiles = audioItems
-                val lastTrack = audioItems.firstOrNull { it.uri.toString() == lastTrackUri }
+                val lastTrack = findRestorableTrack(audioItems, lastTrackUri, lastTrackTitle)
                 if (lastTrack != null) {
                     selectTrack(lastTrack, restorePosition = true, autoPlay = false)
                 } else {
@@ -355,6 +363,41 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun findRestorableTrack(
+        items: List<AudioFile>,
+        lastTrackUri: String?,
+        lastTrackTitle: String?
+    ): AudioFile? {
+        if (items.isEmpty()) {
+            return null
+        }
+        if (!lastTrackUri.isNullOrBlank()) {
+            val byExactUri = items.firstOrNull { it.uri.toString() == lastTrackUri }
+            if (byExactUri != null) {
+                return byExactUri
+            }
+            val parsedUri = runCatching { Uri.parse(lastTrackUri) }.getOrNull()
+            val uriFileName = parsedUri?.lastPathSegment
+                ?.substringAfterLast(':')
+                ?.lowercase(Locale.getDefault())
+            if (!uriFileName.isNullOrBlank()) {
+                val byFileName = items.firstOrNull { audioFile ->
+                    audioFile.uri.lastPathSegment
+                        ?.substringAfterLast(':')
+                        ?.lowercase(Locale.getDefault()) == uriFileName
+                }
+                if (byFileName != null) {
+                    return byFileName
+                }
+            }
+        }
+        if (!lastTrackTitle.isNullOrBlank()) {
+            val titleLower = lastTrackTitle.lowercase(Locale.getDefault())
+            return items.firstOrNull { it.title.lowercase(Locale.getDefault()) == titleLower }
+        }
+        return null
     }
 
     private fun buildTreeNodes(

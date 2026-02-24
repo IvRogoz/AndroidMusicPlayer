@@ -4,6 +4,25 @@
 
 AudioBookPlayer is an Android app focused on long-form listening, especially audiobooks and spoken-word files stored in local folders. The app lets you choose a base folder through the system picker, scans it recursively, and presents your library as an expandable tree in the left drawer. You can browse folders, pick a track, and the player keeps track of your last selected file and playback position so it can resume later.
 
+## Features
+
+- Local folder library using Android system picker with recursive scanning.
+- Resume-aware playback with saved track and position.
+- Large cover art UI with blurred artwork background.
+- Playback controls: play/pause, stop, previous/next, skip, scrub, and time jump.
+- Bookmark system with per-book timestamps, clip capture, and grouped bookmark tree.
+- Media session + foreground playback service for lock screen, Bluetooth, and car controls.
+
+## Latest update (v1.0.2)
+
+- Improved playback position retention when app/service is closed or backgrounded.
+- Added more robust last-track restore when document URIs change.
+- Added user-visible resume failure message when remote playback restore cannot open a track.
+
+## Sideload APK
+
+- `releases/AudioBookPlayer-v1.0.2-debug-sideload.apk`
+
 The main screen is designed around large cover art. When embedded artwork is available, the app shows it on the cover and uses a blurred version in the background for context. When no artwork is available, the visual state stays clean and black. Playback controls include previous and next track, play and pause, stop, configurable skip intervals, direct timeline scrubbing, and a time-jump dialog for entering a target time in `mm:ss` or `hh:mm:ss` format.
 
 Bookmarks are a core feature. A bookmark button appears on the cover area and can store the current book name with the exact timestamp. A long press on that button opens clip-length choices so a short audio segment can also be captured. Bookmarks are stored in a local Room database, while optional clip audio and cover snapshots are saved as files in app storage and referenced from the database. The right drawer contains a grouped bookmark tree where each book expands to its saved timestamps. Selecting a bookmark attempts to open the original track at the saved position, while a dedicated play/stop toggle on bookmark rows can play the saved clip directly without changing the main player state.

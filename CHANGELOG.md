@@ -1,5 +1,12 @@
 ## Changelog
 
+### v1.0.3 - 2026-02-24
+
+- Added sideload artifact: `releases/AudioBookPlayer-v1.0.3-debug-sideload.apk`.
+- Fixed playback stop behavior to preserve current position instead of resetting to start.
+- Fixed resume after seek + app close by restoring explicit saved position on startup/play actions.
+- Updated README latest update and sideload APK reference.
+
 ### v1.0.2 - 2026-02-24
 
 - Added sideload artifact: `releases/AudioBookPlayer-v1.0.2-debug-sideload.apk`.

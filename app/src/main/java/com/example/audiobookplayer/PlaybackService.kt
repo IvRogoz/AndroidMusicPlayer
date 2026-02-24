@@ -104,9 +104,13 @@ class PlaybackService : MediaBrowserServiceCompat() {
             }
             val lastUri = preferences.getString(PlaybackPrefs.KEY_LAST_TRACK_URI, null)
             if (lastUri != null) {
+                val savedPosition = preferences.getLong(PlaybackPrefs.KEY_LAST_POSITION, 0L)
                 val extras = Bundle().apply {
                     putString(EXTRA_TRACK_TITLE, preferences.getString(PlaybackPrefs.KEY_LAST_TRACK_TITLE, null))
                     putBoolean(EXTRA_RESTORE_POSITION, true)
+                    if (savedPosition > 0L) {
+                        putLong(EXTRA_SEEK_POSITION_MS, savedPosition)
+                    }
                 }
                 prepareFromUri(Uri.parse(lastUri), extras, playWhenReady = true)
             } else {
@@ -139,16 +143,18 @@ class PlaybackService : MediaBrowserServiceCompat() {
             val player = mediaPlayer
             if (player != null && isPrepared) {
                 try {
-                    player.pause()
-                    player.seekTo(0)
+                    if (player.isPlaying) {
+                        player.pause()
+                    }
                 } catch (exception: Exception) {
                 }
                 stopPositionPersistence()
-                savePlaybackPosition(0L)
-                updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, 0L)
+                val currentPosition = player.currentPosition.toLong().coerceAtLeast(0L)
+                savePlaybackPosition(currentPosition)
+                updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, currentPosition)
             } else {
                 stopPositionPersistence()
-                updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, 0L)
+                updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, 0L)
             }
         }
 
@@ -193,12 +199,9 @@ class PlaybackService : MediaBrowserServiceCompat() {
             if (seekPositionMs != null) {
                 preparedPlayer.seekTo(seekPositionMs.coerceAtLeast(0L).toInt())
             } else if (restorePosition) {
-                val lastUri = preferences.getString(PlaybackPrefs.KEY_LAST_TRACK_URI, null)
-                if (uri.toString() == lastUri) {
-                    val resumePosition = preferences.getLong(PlaybackPrefs.KEY_LAST_POSITION, 0L).toInt()
-                    if (resumePosition in 1 until preparedPlayer.duration) {
-                        preparedPlayer.seekTo(resumePosition)
-                    }
+                val resumePosition = preferences.getLong(PlaybackPrefs.KEY_LAST_POSITION, 0L).toInt()
+                if (resumePosition in 1 until preparedPlayer.duration) {
+                    preparedPlayer.seekTo(resumePosition)
                 }
             }
             updateMetadata()
@@ -365,7 +368,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         preferences.edit()
             .putString(PlaybackPrefs.KEY_LAST_TRACK_URI, uri)
             .putLong(PlaybackPrefs.KEY_LAST_POSITION, positionMs)
-            .apply()
+            .commit()
     }
 
     private fun saveCurrentTrack(uri: Uri, title: String?) {

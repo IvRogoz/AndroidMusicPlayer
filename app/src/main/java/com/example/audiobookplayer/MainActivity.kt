@@ -214,7 +214,7 @@ class MainActivity : AppCompatActivity() {
                 toggleFolder(node)
             } else {
                 node.audioFile?.let {
-                    selectTrack(it, restorePosition = true, autoPlay = true)
+                    selectTrack(it, restorePosition = false, autoPlay = true)
                     closeDrawer()
                 }
             }
@@ -315,7 +315,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
-        savePlaybackState()
         stopProgressUpdates()
         stopBookmarkClipPlayback()
     }
@@ -660,7 +659,6 @@ class MainActivity : AppCompatActivity() {
             }
             return
         }
-        savePlaybackState()
         currentFile = audioFile
         currentFileIndex = audioFiles.indexOfFirst { it.uri == audioFile.uri }.takeIf { it >= 0 }
         treeAdapter.selectedUri = audioFile.uri
@@ -788,6 +786,11 @@ class MainActivity : AppCompatActivity() {
             putBoolean(PlaybackService.EXTRA_RESTORE_POSITION, restorePosition)
             if (pendingSeekMs != null) {
                 putLong(PlaybackService.EXTRA_SEEK_POSITION_MS, pendingSeekMs)
+            } else if (restorePosition) {
+                val savedPosition = preferences.getLong(PlaybackPrefs.KEY_LAST_POSITION, 0L)
+                if (savedPosition > 0L) {
+                    putLong(PlaybackService.EXTRA_SEEK_POSITION_MS, savedPosition)
+                }
             }
         }
         val shouldAutoPlay = if (pendingSeekMs != null) {
@@ -823,7 +826,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
         controller.transportControls.stop()
-        savePlaybackState(true)
     }
 
     private fun playNextTrack() {
@@ -1159,7 +1161,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handlePlaybackCompleted() {
-        savePlaybackState(true)
         stopProgressUpdates()
         if (binding.autoplaySwitch.isChecked) {
             playNextTrack()
@@ -1167,23 +1168,6 @@ class MainActivity : AppCompatActivity() {
             updateProgress()
             updatePlayPauseButton()
         }
-    }
-
-    private fun savePlaybackState(resetPosition: Boolean = false) {
-        val currentUri = currentFile?.uri?.toString() ?: return
-        if (!resetPosition && !isPrepared) {
-            return
-        }
-        val position = if (resetPosition) {
-            0L
-        } else {
-            getCurrentPlaybackPosition()
-        }
-        preferences.edit()
-            .putString(PlaybackPrefs.KEY_LAST_TRACK_URI, currentUri)
-            .putLong(PlaybackPrefs.KEY_LAST_POSITION, position)
-            .putString(PlaybackPrefs.KEY_LAST_TRACK_TITLE, currentFile?.title)
-            .apply()
     }
 
     private fun closeDrawer() {

@@ -1,5 +1,13 @@
 ## Changelog
 
+### v1.0.5 - 2026-02-25
+
+- Added sideload artifact: `releases/AudioBookPlayer-v1.0.5-debug-sideload.apk`.
+- Added audio focus request/abandon handling to pause cleanly on external audio changes.
+- Added `ACTION_AUDIO_BECOMING_NOISY` handling to pause when output becomes noisy (for example headphone disconnect).
+- Improved playback service lifecycle cleanup for focus and receiver state across pause/stop/error/completion.
+- Updated README latest update and sideload APK reference.
+
 ### v1.0.4 - 2026-02-25
 
 - Added sideload artifact: `releases/AudioBookPlayer-v1.0.4-debug-sideload.apk`.

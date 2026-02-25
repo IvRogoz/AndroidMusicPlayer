@@ -3,11 +3,16 @@ package com.example.audiobookplayer
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.net.Uri
@@ -36,8 +41,28 @@ class PlaybackService : MediaBrowserServiceCompat() {
     private var currentDurationMs: Long = 0L
     private var currentArtwork: Bitmap? = null
     private var isForeground = false
+    private val audioManager by lazy {
+        getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    }
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var hasAudioFocus = false
+    private var noisyReceiverRegistered = false
     private val artExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> pauseForExternalAudioChange()
+        }
+    }
+    private val becomingNoisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+                pauseForExternalAudioChange()
+            }
+        }
+    }
     private val positionSaveRunnable = object : Runnable {
         override fun run() {
             persistCurrentPosition()
@@ -83,6 +108,8 @@ class PlaybackService : MediaBrowserServiceCompat() {
     override fun onDestroy() {
         stopPositionPersistence()
         persistCurrentPosition()
+        unregisterNoisyReceiver()
+        abandonAudioFocus()
         stopForegroundNow()
         NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID)
         artExecutor.shutdownNow()
@@ -136,6 +163,8 @@ class PlaybackService : MediaBrowserServiceCompat() {
             }
             stopPositionPersistence()
             savePlaybackPosition(player.currentPosition.toLong())
+            unregisterNoisyReceiver()
+            abandonAudioFocus()
             updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, player.currentPosition.toLong())
         }
 
@@ -151,9 +180,13 @@ class PlaybackService : MediaBrowserServiceCompat() {
                 stopPositionPersistence()
                 val currentPosition = player.currentPosition.toLong().coerceAtLeast(0L)
                 savePlaybackPosition(currentPosition)
+                unregisterNoisyReceiver()
+                abandonAudioFocus()
                 updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, currentPosition)
             } else {
                 stopPositionPersistence()
+                unregisterNoisyReceiver()
+                abandonAudioFocus()
                 updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, 0L)
             }
         }
@@ -214,11 +247,15 @@ class PlaybackService : MediaBrowserServiceCompat() {
         player.setOnCompletionListener {
             stopPositionPersistence()
             savePlaybackPosition(0L)
+            unregisterNoisyReceiver()
+            abandonAudioFocus()
             updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, 0L)
             mediaSession.sendSessionEvent(EVENT_PLAYBACK_COMPLETED, null)
         }
         player.setOnErrorListener { _, _, _ ->
             stopPositionPersistence()
+            unregisterNoisyReceiver()
+            abandonAudioFocus()
             releasePlayer()
             updatePlaybackState(PlaybackStateCompat.STATE_NONE, 0L)
             mediaSession.sendSessionEvent(EVENT_PLAYBACK_ERROR, null)
@@ -231,6 +268,8 @@ class PlaybackService : MediaBrowserServiceCompat() {
             saveCurrentTrack(uri, currentTitle)
         } catch (exception: Exception) {
             stopPositionPersistence()
+            unregisterNoisyReceiver()
+            abandonAudioFocus()
             releasePlayer()
             updatePlaybackState(PlaybackStateCompat.STATE_NONE, 0L)
             mediaSession.sendSessionEvent(EVENT_PLAYBACK_ERROR, null)
@@ -242,11 +281,32 @@ class PlaybackService : MediaBrowserServiceCompat() {
         if (!isPrepared) {
             return
         }
+        if (!ensureAudioFocus()) {
+            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, player.currentPosition.toLong())
+            return
+        }
         if (!player.isPlaying) {
             player.start()
         }
+        registerNoisyReceiver()
         startPositionPersistence()
         updatePlaybackState(PlaybackStateCompat.STATE_PLAYING, player.currentPosition.toLong())
+    }
+
+    private fun pauseForExternalAudioChange() {
+        val player = mediaPlayer ?: return
+        if (!isPrepared) {
+            return
+        }
+        if (player.isPlaying) {
+            player.pause()
+        }
+        stopPositionPersistence()
+        val currentPosition = player.currentPosition.toLong().coerceAtLeast(0L)
+        savePlaybackPosition(currentPosition)
+        unregisterNoisyReceiver()
+        abandonAudioFocus()
+        updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, currentPosition)
     }
 
     private fun startPositionPersistence() {
@@ -381,9 +441,77 @@ class PlaybackService : MediaBrowserServiceCompat() {
     private fun releasePlayer() {
         stopPositionPersistence()
         persistCurrentPosition()
+        unregisterNoisyReceiver()
+        abandonAudioFocus()
         mediaPlayer?.release()
         mediaPlayer = null
         isPrepared = false
+    }
+
+    private fun ensureAudioFocus(): Boolean {
+        val focusResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val request = audioFocusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                .setWillPauseWhenDucked(true)
+                .setOnAudioFocusChangeListener(audioFocusChangeListener)
+                .build()
+                .also { audioFocusRequest = it }
+            audioManager.requestAudioFocus(request)
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(
+                audioFocusChangeListener,
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN
+            )
+        }
+        hasAudioFocus = focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        return hasAudioFocus
+    }
+
+    private fun abandonAudioFocus() {
+        if (!hasAudioFocus) {
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { request ->
+                audioManager.abandonAudioFocusRequest(request)
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(audioFocusChangeListener)
+        }
+        hasAudioFocus = false
+    }
+
+    private fun registerNoisyReceiver() {
+        if (noisyReceiverRegistered) {
+            return
+        }
+        val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(becomingNoisyReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(becomingNoisyReceiver, filter)
+        }
+        noisyReceiverRegistered = true
+    }
+
+    private fun unregisterNoisyReceiver() {
+        if (!noisyReceiverRegistered) {
+            return
+        }
+        try {
+            unregisterReceiver(becomingNoisyReceiver)
+        } catch (exception: IllegalArgumentException) {
+        }
+        noisyReceiverRegistered = false
     }
 
     private fun updatePlaybackNotification(state: Int) {

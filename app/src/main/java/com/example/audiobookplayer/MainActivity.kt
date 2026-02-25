@@ -1183,26 +1183,54 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupPreviewScrub() {
+        var isScrubbing = false
         binding.previewView.setOnTouchListener { view, event ->
             val controller = mediaController
             if (controller == null || !isPrepared || !binding.previewView.isEnabled) {
+                isScrubbing = false
                 return@setOnTouchListener false
             }
             val width = view.width
             if (width <= 0) {
+                isScrubbing = false
                 return@setOnTouchListener false
             }
             val ratio = (event.x / width).coerceIn(0f, 1f)
             val target = (currentDurationMs * ratio).toLong()
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                MotionEvent.ACTION_DOWN -> {
+                    isScrubbing = true
                     stopProgressUpdates()
                     binding.previewView.setProgress(ratio)
                     binding.currentTime.text = formatDuration(target)
                     true
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                MotionEvent.ACTION_MOVE -> {
+                    if (!isScrubbing) {
+                        return@setOnTouchListener false
+                    }
+                    stopProgressUpdates()
+                    binding.previewView.setProgress(ratio)
+                    binding.currentTime.text = formatDuration(target)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!isScrubbing) {
+                        return@setOnTouchListener false
+                    }
+                    isScrubbing = false
                     controller.transportControls.seekTo(target)
+                    if (playbackState?.state == PlaybackStateCompat.STATE_PLAYING) {
+                        startProgressUpdates()
+                    }
+                    updateProgress()
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    if (!isScrubbing) {
+                        return@setOnTouchListener false
+                    }
+                    isScrubbing = false
                     if (playbackState?.state == PlaybackStateCompat.STATE_PLAYING) {
                         startProgressUpdates()
                     }

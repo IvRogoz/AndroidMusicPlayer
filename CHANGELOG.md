@@ -1,5 +1,12 @@
 ## Changelog
 
+### v1.0.4 - 2026-02-25
+
+- Added sideload artifact: `releases/AudioBookPlayer-v1.0.4-debug-sideload.apk`.
+- Fixed waveform scrub behavior so drawer interactions cannot change playback position.
+- Updated scrub touch handling to seek only on `ACTION_UP` and ignore `ACTION_CANCEL` seeks.
+- Updated README latest update and sideload APK reference.
+
 ### v1.0.3 - 2026-02-24
 
 - Added sideload artifact: `releases/AudioBookPlayer-v1.0.3-debug-sideload.apk`.

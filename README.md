@@ -13,15 +13,15 @@ AudioBookPlayer is an Android app focused on long-form listening, especially aud
 - Bookmark system with per-book timestamps, clip capture, and grouped bookmark tree.
 - Media session + foreground playback service for lock screen, Bluetooth, and car controls.
 
-## Latest update (v1.0.3)
+## Latest update (v1.0.4)
 
-- Fixed stop handling so playback no longer rewinds to `0` on app/service stop.
-- Fixed resume to keep the exact current position after seek + app close.
-- Improved saved-position forwarding for startup and Bluetooth/car play actions.
+- Fixed waveform scrubbing so drawer interaction can no longer trigger accidental seek.
+- Improved scrub gesture handling by applying seek only on completed touch release.
+- Kept playback position stable when scrub gesture is cancelled/interrupted.
 
 ## Sideload APK
 
-- `releases/AudioBookPlayer-v1.0.3-debug-sideload.apk`
+- `releases/AudioBookPlayer-v1.0.4-debug-sideload.apk`
 
 The main screen is designed around large cover art. When embedded artwork is available, the app shows it on the cover and uses a blurred version in the background for context. When no artwork is available, the visual state stays clean and black. Playback controls include previous and next track, play and pause, stop, configurable skip intervals, direct timeline scrubbing, and a time-jump dialog for entering a target time in `mm:ss` or `hh:mm:ss` format.
 

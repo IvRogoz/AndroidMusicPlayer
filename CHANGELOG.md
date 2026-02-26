@@ -1,5 +1,13 @@
 ## Changelog
 
+### v1.0.6 - 2026-02-26
+
+- Added sideload artifact: `releases/AudioBookPlayer-v1.0.6-debug-sideload.apk`.
+- Fixed `AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK` handling to duck instead of pausing for short notification sounds.
+- Added focus-gain resume behavior after transient focus loss and delayed focus grant handling.
+- Improved closed-app media button startup routing for Bluetooth/headset/car controls.
+- Updated README latest update and sideload APK reference.
+
 ### v1.0.5 - 2026-02-25
 
 - Added sideload artifact: `releases/AudioBookPlayer-v1.0.5-debug-sideload.apk`.

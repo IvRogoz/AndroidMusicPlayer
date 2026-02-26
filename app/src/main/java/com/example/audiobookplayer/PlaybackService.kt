@@ -46,20 +46,28 @@ class PlaybackService : MediaBrowserServiceCompat() {
     }
     private var audioFocusRequest: AudioFocusRequest? = null
     private var hasAudioFocus = false
+    private var resumeOnAudioFocusGain = false
     private var noisyReceiverRegistered = false
     private val artExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS,
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> pauseForExternalAudioChange()
+            AudioManager.AUDIOFOCUS_LOSS -> pauseForExternalAudioChange(shouldResumeOnGain = false)
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pauseForExternalAudioChange(shouldResumeOnGain = true)
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> setPlayerVolume(DUCKED_VOLUME)
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                setPlayerVolume(NORMAL_VOLUME)
+                if (resumeOnAudioFocusGain && isPrepared && mediaPlayer?.isPlaying == false) {
+                    resumeOnAudioFocusGain = false
+                    startPlayback()
+                }
+            }
         }
     }
     private val becomingNoisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-                pauseForExternalAudioChange()
+                pauseForExternalAudioChange(shouldResumeOnGain = false)
             }
         }
     }
@@ -163,6 +171,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
             }
             stopPositionPersistence()
             savePlaybackPosition(player.currentPosition.toLong())
+            resumeOnAudioFocusGain = false
             unregisterNoisyReceiver()
             abandonAudioFocus()
             updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, player.currentPosition.toLong())
@@ -180,11 +189,13 @@ class PlaybackService : MediaBrowserServiceCompat() {
                 stopPositionPersistence()
                 val currentPosition = player.currentPosition.toLong().coerceAtLeast(0L)
                 savePlaybackPosition(currentPosition)
+                resumeOnAudioFocusGain = false
                 unregisterNoisyReceiver()
                 abandonAudioFocus()
                 updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, currentPosition)
             } else {
                 stopPositionPersistence()
+                resumeOnAudioFocusGain = false
                 unregisterNoisyReceiver()
                 abandonAudioFocus()
                 updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, 0L)
@@ -247,6 +258,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         player.setOnCompletionListener {
             stopPositionPersistence()
             savePlaybackPosition(0L)
+            resumeOnAudioFocusGain = false
             unregisterNoisyReceiver()
             abandonAudioFocus()
             updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, 0L)
@@ -254,6 +266,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         }
         player.setOnErrorListener { _, _, _ ->
             stopPositionPersistence()
+            resumeOnAudioFocusGain = false
             unregisterNoisyReceiver()
             abandonAudioFocus()
             releasePlayer()
@@ -268,6 +281,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
             saveCurrentTrack(uri, currentTitle)
         } catch (exception: Exception) {
             stopPositionPersistence()
+            resumeOnAudioFocusGain = false
             unregisterNoisyReceiver()
             abandonAudioFocus()
             releasePlayer()
@@ -285,6 +299,8 @@ class PlaybackService : MediaBrowserServiceCompat() {
             updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, player.currentPosition.toLong())
             return
         }
+        setPlayerVolume(NORMAL_VOLUME)
+        resumeOnAudioFocusGain = false
         if (!player.isPlaying) {
             player.start()
         }
@@ -293,11 +309,12 @@ class PlaybackService : MediaBrowserServiceCompat() {
         updatePlaybackState(PlaybackStateCompat.STATE_PLAYING, player.currentPosition.toLong())
     }
 
-    private fun pauseForExternalAudioChange() {
+    private fun pauseForExternalAudioChange(shouldResumeOnGain: Boolean) {
         val player = mediaPlayer ?: return
         if (!isPrepared) {
             return
         }
+        resumeOnAudioFocusGain = shouldResumeOnGain
         if (player.isPlaying) {
             player.pause()
         }
@@ -307,6 +324,10 @@ class PlaybackService : MediaBrowserServiceCompat() {
         unregisterNoisyReceiver()
         abandonAudioFocus()
         updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, currentPosition)
+    }
+
+    private fun setPlayerVolume(volume: Float) {
+        mediaPlayer?.setVolume(volume, volume)
     }
 
     private fun startPositionPersistence() {
@@ -441,6 +462,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
     private fun releasePlayer() {
         stopPositionPersistence()
         persistCurrentPosition()
+        resumeOnAudioFocusGain = false
         unregisterNoisyReceiver()
         abandonAudioFocus()
         mediaPlayer?.release()
@@ -449,6 +471,9 @@ class PlaybackService : MediaBrowserServiceCompat() {
     }
 
     private fun ensureAudioFocus(): Boolean {
+        if (hasAudioFocus) {
+            return true
+        }
         val focusResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val request = audioFocusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(
@@ -457,6 +482,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
                         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                         .build()
                 )
+                .setAcceptsDelayedFocusGain(true)
                 .setWillPauseWhenDucked(true)
                 .setOnAudioFocusChangeListener(audioFocusChangeListener)
                 .build()
@@ -470,8 +496,22 @@ class PlaybackService : MediaBrowserServiceCompat() {
                 AudioManager.AUDIOFOCUS_GAIN
             )
         }
-        hasAudioFocus = focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        return hasAudioFocus
+        return when (focusResult) {
+            AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
+                hasAudioFocus = true
+                resumeOnAudioFocusGain = false
+                true
+            }
+            AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
+                hasAudioFocus = false
+                resumeOnAudioFocusGain = true
+                false
+            }
+            else -> {
+                hasAudioFocus = false
+                false
+            }
+        }
     }
 
     private fun abandonAudioFocus() {
@@ -622,5 +662,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         private const val CONTENT_INTENT_REQUEST_CODE = 1002
         private const val ART_TARGET_SIZE = 512
         private const val POSITION_SAVE_INTERVAL_MS = 2_000L
+        private const val NORMAL_VOLUME = 1f
+        private const val DUCKED_VOLUME = 0.25f
     }
 }

@@ -26,6 +26,7 @@ import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.ServiceCompat
 import androidx.media.MediaBrowserServiceCompat
 import androidx.media.session.MediaButtonReceiver
 import java.util.concurrent.Executors
@@ -85,10 +86,6 @@ class PlaybackService : MediaBrowserServiceCompat() {
         ensureNotificationChannel()
         mediaSession = MediaSessionCompat(this, "PlaybackService").apply {
             setCallback(sessionCallback)
-            setFlags(
-                MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
-                    MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
-            )
             setSessionActivity(createContentIntent())
             isActive = true
         }
@@ -569,7 +566,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
                     }
                 } else {
                     if (isForeground) {
-                        stopForeground(false)
+                        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_DETACH)
                         isForeground = false
                     }
                     NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, notification)
@@ -585,7 +582,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
 
     private fun stopForegroundNow() {
         if (isForeground) {
-            stopForeground(true)
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
             isForeground = false
         }
     }

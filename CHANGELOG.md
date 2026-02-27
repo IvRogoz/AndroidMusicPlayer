@@ -1,5 +1,13 @@
 ## Changelog
 
+### v1.0.7 - 2026-02-27
+
+- Added sideload artifact: `releases/AudioBookPlayer-v1.0.7-debug-sideload.apk`.
+- Fixed playback interruption when opening the full app from media notification/Bluetooth activity.
+- Prevented startup restore from re-preparing the player while service playback is already active.
+- Synced full-app UI selection/title/artwork to active service playback without restarting audio.
+- Updated README latest update and sideload APK reference.
+
 ### v1.0.6 - 2026-02-26
 
 - Added sideload artifact: `releases/AudioBookPlayer-v1.0.6-debug-sideload.apk`.

@@ -117,6 +117,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun onMetadataChanged(metadata: MediaMetadataCompat?) {
+            val displayTitle = metadata?.getString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE)
+                ?: metadata?.getString(MediaMetadataCompat.METADATA_KEY_TITLE)
+            if (!displayTitle.isNullOrBlank()) {
+                binding.trackTitle.text = displayTitle
+            }
             val duration = metadata?.getLong(MediaMetadataCompat.METADATA_KEY_DURATION) ?: 0L
             if (duration > 0L) {
                 currentDurationMs = duration
@@ -356,7 +361,11 @@ class MainActivity : AppCompatActivity() {
                 audioFiles = audioItems
                 val lastTrack = findRestorableTrack(audioItems, lastTrackUri, lastTrackTitle)
                 if (lastTrack != null) {
-                    selectTrack(lastTrack, restorePosition = true, autoPlay = false)
+                    if (!isServiceCurrentlyPlaying()) {
+                        selectTrack(lastTrack, restorePosition = true, autoPlay = false)
+                    } else {
+                        syncSelectionToActivePlayback(lastTrack)
+                    }
                 } else {
                     clearSelection()
                 }
@@ -397,6 +406,28 @@ class MainActivity : AppCompatActivity() {
             return items.firstOrNull { it.title.lowercase(Locale.getDefault()) == titleLower }
         }
         return null
+    }
+
+    private fun isServiceCurrentlyPlaying(): Boolean {
+        return playbackState?.state == PlaybackStateCompat.STATE_PLAYING
+    }
+
+    private fun syncSelectionToActivePlayback(audioFile: AudioFile) {
+        currentFile = audioFile
+        currentFileIndex = audioFiles.indexOfFirst { it.uri == audioFile.uri }.takeIf { it >= 0 }
+        treeAdapter.selectedUri = audioFile.uri
+        binding.bookmarkButton.isEnabled = true
+        binding.trackTitle.text = audioFile.title
+        binding.previewView.setWaveformSeed(audioFile.uri.hashCode())
+        if (currentDurationMs <= 0L) {
+            currentDurationMs = audioFile.durationMs
+            binding.duration.text = formatDuration(audioFile.durationMs)
+        }
+        loadAlbumArt(audioFile)
+        updateTrackNavigationButtons()
+        setPlaybackControlsEnabled(isPrepared)
+        updateProgress()
+        updatePlayPauseButton()
     }
 
     private fun buildTreeNodes(

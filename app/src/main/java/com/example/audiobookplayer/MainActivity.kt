@@ -77,6 +77,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingPlaybackFile: AudioFile? = null
     private var pendingPlaybackRestore = false
     private var pendingPlaybackAutoPlay = false
+    private var pendingRestoreTrack: AudioFile? = null
 
     private val progressRunnable = object : Runnable {
         override fun run() {
@@ -171,6 +172,7 @@ class MainActivity : AppCompatActivity() {
             }
             updatePlayPauseButton()
             updateProgress()
+            resolvePendingRestoreTrack()
             val pendingFile = pendingPlaybackFile
             if (pendingFile != null) {
                 pendingPlaybackFile = null
@@ -361,15 +363,30 @@ class MainActivity : AppCompatActivity() {
                 audioFiles = audioItems
                 val lastTrack = findRestorableTrack(audioItems, lastTrackUri, lastTrackTitle)
                 if (lastTrack != null) {
-                    if (!isServiceCurrentlyPlaying()) {
-                        selectTrack(lastTrack, restorePosition = true, autoPlay = false)
+                    if (mediaController == null) {
+                        pendingRestoreTrack = lastTrack
                     } else {
-                        syncSelectionToActivePlayback(lastTrack)
+                        if (!isServiceCurrentlyPlaying()) {
+                            selectTrack(lastTrack, restorePosition = true, autoPlay = false)
+                        } else {
+                            syncSelectionToActivePlayback(lastTrack)
+                        }
                     }
                 } else {
+                    pendingRestoreTrack = null
                     clearSelection()
                 }
             }
+        }
+    }
+
+    private fun resolvePendingRestoreTrack() {
+        val restoreTrack = pendingRestoreTrack ?: return
+        pendingRestoreTrack = null
+        if (!isServiceCurrentlyPlaying()) {
+            selectTrack(restoreTrack, restorePosition = true, autoPlay = false)
+        } else {
+            syncSelectionToActivePlayback(restoreTrack)
         }
     }
 
@@ -680,6 +697,7 @@ class MainActivity : AppCompatActivity() {
         autoPlay: Boolean,
         useBookmarkSeek: Boolean = false
     ) {
+        pendingRestoreTrack = null
         if (!useBookmarkSeek) {
             pendingBookmarkSeekMs = null
             pendingBookmarkAutoPlay = false

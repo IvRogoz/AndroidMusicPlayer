@@ -1,5 +1,12 @@
 ## Changelog
 
+### v1.0.8 - 2026-03-02
+
+- Added sideload artifact: `releases/AudioBookPlayer-v1.0.8-debug-sideload.apk`.
+- Fixed playback interruption when rotating the app between portrait and landscape.
+- Deferred last-track restore until media controller reconnection so active service playback is not re-prepared.
+- Updated README latest update and sideload APK reference.
+
 ### v1.0.7 - 2026-02-27
 
 - Added sideload artifact: `releases/AudioBookPlayer-v1.0.7-debug-sideload.apk`.

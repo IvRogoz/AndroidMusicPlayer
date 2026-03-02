@@ -78,6 +78,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingPlaybackRestore = false
     private var pendingPlaybackAutoPlay = false
     private var pendingRestoreTrack: AudioFile? = null
+    private var skipAutoRestoreTrack = false
 
     private val progressRunnable = object : Runnable {
         override fun run() {
@@ -204,6 +205,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        skipAutoRestoreTrack = savedInstanceState != null
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
@@ -332,6 +334,7 @@ class MainActivity : AppCompatActivity() {
         playbackState = null
         mediaBrowser?.disconnect()
         mediaBrowser = null
+        bookmarkDatabase.close()
         super.onDestroy()
         ioExecutor.shutdown()
     }
@@ -363,6 +366,12 @@ class MainActivity : AppCompatActivity() {
                 audioFiles = audioItems
                 val lastTrack = findRestorableTrack(audioItems, lastTrackUri, lastTrackTitle)
                 if (lastTrack != null) {
+                    if (skipAutoRestoreTrack) {
+                        if (hasActiveServiceSession()) {
+                            syncSelectionToActivePlayback(lastTrack)
+                        }
+                        return@runOnUiThread
+                    }
                     if (mediaController == null) {
                         pendingRestoreTrack = lastTrack
                     } else {
@@ -383,11 +392,16 @@ class MainActivity : AppCompatActivity() {
     private fun resolvePendingRestoreTrack() {
         val restoreTrack = pendingRestoreTrack ?: return
         pendingRestoreTrack = null
-        if (!isServiceCurrentlyPlaying()) {
+        if (!hasActiveServiceSession()) {
             selectTrack(restoreTrack, restorePosition = true, autoPlay = false)
         } else {
             syncSelectionToActivePlayback(restoreTrack)
         }
+    }
+
+    private fun hasActiveServiceSession(): Boolean {
+        val state = playbackState?.state
+        return (state != null && state != PlaybackStateCompat.STATE_NONE) || mediaController?.metadata != null
     }
 
     private fun findRestorableTrack(
@@ -426,7 +440,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun isServiceCurrentlyPlaying(): Boolean {
-        return playbackState?.state == PlaybackStateCompat.STATE_PLAYING
+        val state = playbackState?.state ?: return false
+        return state == PlaybackStateCompat.STATE_PLAYING ||
+            state == PlaybackStateCompat.STATE_PAUSED ||
+            state == PlaybackStateCompat.STATE_BUFFERING
     }
 
     private fun syncSelectionToActivePlayback(audioFile: AudioFile) {

@@ -1,5 +1,13 @@
 ## Changelog
 
+### v1.0.9 - 2026-03-02
+
+- Added sideload artifact: `releases/AudioBookPlayer-v1.0.9-debug-sideload.apk`.
+- Fixed playback stopping during orientation changes by keeping playback service alive across activity recreation.
+- Improved startup/rotation restore behavior to sync UI with active service sessions without re-preparing playback.
+- Fixed bookmark database lifecycle cleanup to avoid leaked SQLite connection warnings.
+- Updated README latest update and sideload APK reference.
+
 ### v1.0.8 - 2026-03-02
 
 - Added sideload artifact: `releases/AudioBookPlayer-v1.0.8-debug-sideload.apk`.

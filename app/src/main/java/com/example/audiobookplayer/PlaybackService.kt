@@ -27,6 +27,7 @@ import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import androidx.media.MediaBrowserServiceCompat
 import androidx.media.session.MediaButtonReceiver
 import java.util.concurrent.Executors
@@ -292,6 +293,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         if (!isPrepared) {
             return
         }
+        ensureServiceStartedForPlayback()
         if (!ensureAudioFocus()) {
             updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, player.currentPosition.toLong())
             return
@@ -645,6 +647,16 @@ class PlaybackService : MediaBrowserServiceCompat() {
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)
+    }
+
+    private fun ensureServiceStartedForPlayback() {
+        val serviceIntent = Intent(this, PlaybackService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ContextCompat.startForegroundService(this, serviceIntent)
+        } else {
+            @Suppress("DEPRECATION")
+            startService(serviceIntent)
+        }
     }
 
     companion object {

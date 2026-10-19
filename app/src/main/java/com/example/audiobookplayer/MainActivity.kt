@@ -148,13 +148,7 @@ class MainActivity : AppCompatActivity() {
         override fun onSessionEvent(event: String?, extras: Bundle?) {
             when (event) {
                 PlaybackService.EVENT_PLAYBACK_COMPLETED -> handlePlaybackCompleted()
-                PlaybackService.EVENT_PLAYBACK_ERROR -> {
-                    Toast.makeText(
-                        this@MainActivity,
-                        getString(R.string.playback_resume_failed),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
+                PlaybackService.EVENT_PLAYBACK_ERROR -> showPlaybackErrorToast(extras)
             }
         }
     }
@@ -787,7 +781,16 @@ class MainActivity : AppCompatActivity() {
         }
         if (currentFile?.uri == audioFile.uri) {
             if (autoPlay) {
-                togglePlayback()
+                if (isPrepared) {
+                    togglePlayback()
+                } else {
+                    val lastTrackUri = preferences.getString(PlaybackPrefs.KEY_LAST_TRACK_URI, null)
+                    preparePlayer(
+                        audioFile,
+                        restorePosition = lastTrackUri == audioFile.uri.toString(),
+                        autoPlay = true
+                    )
+                }
             }
             return
         }
@@ -825,6 +828,7 @@ class MainActivity : AppCompatActivity() {
         treeAdapter.selectedUri = null
         binding.trackTitle.text = getString(R.string.no_track_selected)
         binding.albumArtLarge.setImageDrawable(null)
+        binding.albumArtLarge.setBackgroundResource(R.drawable.album_art_placeholder)
         binding.backgroundArt.setImageDrawable(null)
         clearBackgroundBlur()
         binding.backgroundArt.alpha = 0f
@@ -856,6 +860,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadAlbumArt(audioFile: AudioFile) {
         binding.albumArtLarge.setImageDrawable(null)
+        binding.albumArtLarge.setBackgroundResource(R.drawable.album_art_placeholder)
         binding.backgroundArt.setImageDrawable(null)
         clearBackgroundBlur()
         binding.backgroundArt.alpha = 0f
@@ -864,6 +869,7 @@ class MainActivity : AppCompatActivity() {
         artLoader.load(audioFile.uri, LARGE_ART_SIZE) { bitmap ->
             if (audioFile.uri == currentFile?.uri) {
                 if (bitmap != null) {
+                    binding.albumArtLarge.background = null
                     binding.albumArtLarge.setImageBitmap(bitmap)
                     binding.backgroundArt.setImageBitmap(bitmap)
                     applyBackgroundBlur()
@@ -940,11 +946,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun togglePlayback() {
-        val controller = mediaController
-        if (controller == null || !isPrepared) {
+        val controller = mediaController ?: return
+        val state = controller.playbackState?.state ?: PlaybackStateCompat.STATE_NONE
+        if (!isPrepared) {
+            if (state == PlaybackStateCompat.STATE_NONE || state == PlaybackStateCompat.STATE_STOPPED) {
+                controller.transportControls.play()
+            }
             return
         }
-        val state = controller.playbackState?.state ?: PlaybackStateCompat.STATE_NONE
         if (state == PlaybackStateCompat.STATE_PLAYING) {
             controller.transportControls.pause()
         } else {
@@ -1298,6 +1307,22 @@ class MainActivity : AppCompatActivity() {
         binding.timeJumpButton.isEnabled = enabled
         binding.skipForwardButton.isEnabled = enabled
         updateTrackNavigationButtons()
+    }
+
+    private fun showPlaybackErrorToast(extras: Bundle?) {
+        val what = extras?.getInt(PlaybackService.EXTRA_ERROR_CODE, 0) ?: 0
+        val detail = extras?.getInt(PlaybackService.EXTRA_ERROR_DETAIL, 0) ?: 0
+        val messageRes = when {
+            detail == MediaPlayer.MEDIA_ERROR_UNSUPPORTED || what == MediaPlayer.MEDIA_ERROR_UNSUPPORTED ->
+                R.string.playback_unsupported_format
+            detail == MediaPlayer.MEDIA_ERROR_MALFORMED || what == MediaPlayer.MEDIA_ERROR_MALFORMED ->
+                R.string.playback_malformed_file
+            detail == MediaPlayer.MEDIA_ERROR_IO || what == MediaPlayer.MEDIA_ERROR_IO ->
+                R.string.playback_unreadable_file
+            detail == MediaPlayer.MEDIA_ERROR_TIMED_OUT -> R.string.playback_timed_out
+            else -> R.string.playback_failed
+        }
+        Toast.makeText(this, getString(messageRes), Toast.LENGTH_SHORT).show()
     }
 
     private fun handlePlaybackCompleted() {

@@ -31,15 +31,23 @@ import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.media.MediaBrowserServiceCompat
 import androidx.media.session.MediaButtonReceiver
+import androidx.media3.common.AudioAttributes as Media3AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
 import android.util.Log
 import java.util.ArrayDeque
 import java.util.concurrent.Executors
 
+@androidx.annotation.OptIn(UnstableApi::class)
 class PlaybackService : MediaBrowserServiceCompat() {
 
     private val preferences by lazy { getSharedPreferences(PlaybackPrefs.PREFS_NAME, MODE_PRIVATE) }
     private lateinit var mediaSession: MediaSessionCompat
-    private var mediaPlayer: MediaPlayer? = null
+    private var exoPlayer: ExoPlayer? = null
     private var isPrepared = false
     private var currentUri: Uri? = null
     private var currentTitle: String? = null
@@ -62,6 +70,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
     private var audioFocusRequestActive = false
     private var resumeOnAudioFocusGain = false
     private var noisyReceiverRegistered = false
+    private var prepareTimeoutRunnable: Runnable? = null
     private val artExecutor = Executors.newSingleThreadExecutor()
     private val browseExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -83,7 +92,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
                 if (AudioFocusPolicy.shouldResumeOnGain(
                         resumePending = resumeOnAudioFocusGain,
                         isPrepared = isPrepared,
-                        isPlaying = mediaPlayer?.isPlaying == true
+                        isPlaying = exoPlayer?.isPlaying == true
                     )
                 ) {
                     resumeOnAudioFocusGain = false
@@ -102,7 +111,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
     private val positionSaveRunnable = object : Runnable {
         override fun run() {
             persistCurrentPosition()
-            if (isPrepared && mediaPlayer?.isPlaying == true) {
+            if (isPrepared && exoPlayer?.isPlaying == true) {
                 mainHandler.postDelayed(this, POSITION_SAVE_INTERVAL_MS)
             }
         }
@@ -233,7 +242,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         }
 
         override fun onPause() {
-            val player = mediaPlayer ?: return
+            val player = exoPlayer ?: return
             if (!isPrepared) {
                 return
             }
@@ -241,15 +250,15 @@ class PlaybackService : MediaBrowserServiceCompat() {
                 player.pause()
             }
             stopPositionPersistence()
-            savePlaybackPosition(player.currentPosition.toLong())
+            savePlaybackPosition(player.currentPosition)
             resumeOnAudioFocusGain = false
             unregisterNoisyReceiver()
             abandonAudioFocus()
-            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, player.currentPosition.toLong())
+            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, player.currentPosition)
         }
 
         override fun onStop() {
-            val position = mediaPlayer?.takeIf { isPrepared }?.currentPosition?.toLong()?.coerceAtLeast(0L) ?: 0L
+            val position = exoPlayer?.takeIf { isPrepared }?.currentPosition?.coerceAtLeast(0L) ?: 0L
             if (isPrepared) {
                 savePlaybackPosition(position)
             }
@@ -259,19 +268,19 @@ class PlaybackService : MediaBrowserServiceCompat() {
         }
 
         override fun onSeekTo(pos: Long) {
-            val player = mediaPlayer ?: return
+            val player = exoPlayer ?: return
             if (!isPrepared) {
                 return
             }
-            val target = pos.coerceAtLeast(0L).toInt()
+            val target = pos.coerceAtLeast(0L)
             player.seekTo(target)
-            savePlaybackPosition(target.toLong())
+            savePlaybackPosition(target)
             val state = if (player.isPlaying) {
                 PlaybackStateCompat.STATE_PLAYING
             } else {
                 PlaybackStateCompat.STATE_PAUSED
             }
-            updatePlaybackState(state, target.toLong())
+            updatePlaybackState(state, target)
         }
     }
 
@@ -356,57 +365,45 @@ class PlaybackService : MediaBrowserServiceCompat() {
         currentTrackNumber = null
         isPrepared = false
         loadMetadataAsync(uri)
-        val player = MediaPlayer()
-        mediaPlayer = player
+        val player = ExoPlayer.Builder(this).build()
+        exoPlayer = player
         player.setAudioAttributes(
-            AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build()
+            Media3AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                .build(),
+            false
         )
-        player.setOnPreparedListener { preparedPlayer ->
-            isPrepared = true
-            currentDurationMs = preparedPlayer.duration.toLong()
-            val restorePosition = extras?.getBoolean(EXTRA_RESTORE_POSITION, false) == true
-            val seekPositionMs = extras?.getLong(EXTRA_SEEK_POSITION_MS)
-            if (seekPositionMs != null) {
-                preparedPlayer.seekTo(seekPositionMs.coerceAtLeast(0L).toInt())
-            } else if (restorePosition) {
-                val resumePosition = preferences.getLong(PlaybackPrefs.KEY_LAST_POSITION, 0L).toInt()
-                if (resumePosition in 1 until preparedPlayer.duration) {
-                    preparedPlayer.seekTo(resumePosition)
+        player.playWhenReady = false
+        player.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (exoPlayer !== player) {
+                    return
+                }
+                when (playbackState) {
+                    Player.STATE_READY -> handlePlayerReady(player, extras, playWhenReady)
+                    Player.STATE_ENDED -> handlePlaybackCompleted()
                 }
             }
-            updateMetadata()
-            if (playWhenReady) {
-                startPlayback()
-            } else {
-                updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, preparedPlayer.currentPosition.toLong())
+
+            override fun onPlayerError(error: PlaybackException) {
+                if (exoPlayer !== player) {
+                    return
+                }
+                Log.e(TAG, "ExoPlayer error ${error.errorCodeName} for $uri", error)
+                stopPositionPersistence()
+                resumeOnAudioFocusGain = false
+                unregisterNoisyReceiver()
+                abandonAudioFocus()
+                releasePlayer()
+                updatePlaybackState(PlaybackStateCompat.STATE_NONE, 0L)
+                sendPlaybackError(error)
             }
-        }
-        player.setOnCompletionListener {
-            stopPositionPersistence()
-            savePlaybackPosition(0L)
-            resumeOnAudioFocusGain = false
-            unregisterNoisyReceiver()
-            abandonAudioFocus()
-            updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, 0L)
-            mediaSession.sendSessionEvent(EVENT_PLAYBACK_COMPLETED, null)
-        }
-        player.setOnErrorListener { _, what, extra ->
-            Log.e(TAG, "MediaPlayer error what=$what extra=$extra for $uri")
-            stopPositionPersistence()
-            resumeOnAudioFocusGain = false
-            unregisterNoisyReceiver()
-            abandonAudioFocus()
-            releasePlayer()
-            updatePlaybackState(PlaybackStateCompat.STATE_NONE, 0L)
-            mediaSession.sendSessionEvent(EVENT_PLAYBACK_ERROR, null)
-            true
-        }
+        })
         try {
-            player.setDataSource(this, uri)
-            player.prepareAsync()
+            player.setMediaItem(MediaItem.fromUri(uri))
+            player.prepare()
+            schedulePrepareTimeout(player)
             updatePlaybackState(PlaybackStateCompat.STATE_BUFFERING, 0L)
             saveCurrentTrack(uri, currentTitle)
         } catch (exception: Exception) {
@@ -417,32 +414,136 @@ class PlaybackService : MediaBrowserServiceCompat() {
             abandonAudioFocus()
             releasePlayer()
             updatePlaybackState(PlaybackStateCompat.STATE_NONE, 0L)
-            mediaSession.sendSessionEvent(EVENT_PLAYBACK_ERROR, null)
+            sendPlaybackError(null, null)
         }
     }
 
+    private fun handlePlayerReady(player: ExoPlayer, extras: Bundle?, playWhenReady: Boolean) {
+        if (isPrepared) {
+            return
+        }
+        cancelPrepareTimeout()
+        isPrepared = true
+        currentDurationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: 0L
+        val restorePosition = extras?.getBoolean(EXTRA_RESTORE_POSITION, false) == true
+        val seekPositionMs = extras?.getLong(EXTRA_SEEK_POSITION_MS)
+        if (seekPositionMs != null) {
+            player.seekTo(seekPositionMs.coerceAtLeast(0L))
+        } else if (restorePosition) {
+            val resumePosition = preferences.getLong(PlaybackPrefs.KEY_LAST_POSITION, 0L)
+            if (resumePosition in 1L until currentDurationMs) {
+                player.seekTo(resumePosition)
+            }
+        }
+        updateMetadata()
+        if (playWhenReady) {
+            startPlayback()
+        } else {
+            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, player.currentPosition)
+        }
+    }
+
+    private fun handlePlaybackCompleted() {
+        stopPositionPersistence()
+        savePlaybackPosition(0L)
+        resumeOnAudioFocusGain = false
+        unregisterNoisyReceiver()
+        abandonAudioFocus()
+        updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, 0L)
+        mediaSession.sendSessionEvent(EVENT_PLAYBACK_COMPLETED, null)
+    }
+
+    private fun schedulePrepareTimeout(player: ExoPlayer) {
+        cancelPrepareTimeout()
+        val timeoutRunnable = Runnable {
+            prepareTimeoutRunnable = null
+            if (exoPlayer === player && !isPrepared && !isDestroyed) {
+                Log.e(TAG, "Timed out preparing audio source $currentUri")
+                stopPositionPersistence()
+                resumeOnAudioFocusGain = false
+                unregisterNoisyReceiver()
+                abandonAudioFocus()
+                releasePlayer()
+                updatePlaybackState(PlaybackStateCompat.STATE_NONE, 0L)
+                sendPlaybackError(null, MediaPlayer.MEDIA_ERROR_TIMED_OUT)
+            }
+        }
+        prepareTimeoutRunnable = timeoutRunnable
+        mainHandler.postDelayed(timeoutRunnable, PREPARE_TIMEOUT_MS)
+    }
+
+    private fun cancelPrepareTimeout() {
+        prepareTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        prepareTimeoutRunnable = null
+    }
+
+    private fun sendPlaybackError(what: Int?, extra: Int?) {
+        val extras = Bundle()
+        if (what != null) {
+            extras.putInt(EXTRA_ERROR_CODE, what)
+        }
+        if (extra != null) {
+            extras.putInt(EXTRA_ERROR_DETAIL, extra)
+        }
+        mediaSession.sendSessionEvent(EVENT_PLAYBACK_ERROR, extras)
+    }
+
+    private fun sendPlaybackError(error: PlaybackException) {
+        val mediaErrorCode = when (error.errorCode) {
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
+            PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+            PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED,
+            PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+            PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED -> MediaPlayer.MEDIA_ERROR_UNSUPPORTED
+
+            PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+            PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED,
+            PlaybackException.ERROR_CODE_DECODING_FAILED,
+            PlaybackException.ERROR_CODE_FAILED_RUNTIME_CHECK -> MediaPlayer.MEDIA_ERROR_MALFORMED
+
+            PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+            PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE,
+            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+            PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+            PlaybackException.ERROR_CODE_IO_NO_PERMISSION,
+            PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED,
+            PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE -> MediaPlayer.MEDIA_ERROR_IO
+
+            else -> MediaPlayer.MEDIA_ERROR_UNKNOWN
+        }
+        val detail = if (error.errorCode == PlaybackException.ERROR_CODE_TIMEOUT) {
+            MediaPlayer.MEDIA_ERROR_TIMED_OUT
+        } else {
+            null
+        }
+        sendPlaybackError(mediaErrorCode, detail)
+    }
+
     private fun startPlayback() {
-        val player = mediaPlayer ?: return
+        val player = exoPlayer ?: return
         if (!isPrepared) {
             return
         }
         ensureServiceStartedForPlayback()
         if (!ensureAudioFocus()) {
-            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, player.currentPosition.toLong())
+            updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, player.currentPosition)
             return
         }
         setPlayerVolume(NORMAL_VOLUME)
         resumeOnAudioFocusGain = false
         if (!player.isPlaying) {
-            player.start()
+            player.play()
         }
         registerNoisyReceiver()
         startPositionPersistence()
-        updatePlaybackState(PlaybackStateCompat.STATE_PLAYING, player.currentPosition.toLong())
+        updatePlaybackState(PlaybackStateCompat.STATE_PLAYING, player.currentPosition)
     }
 
     private fun pauseForExternalAudioChange(shouldResumeOnGain: Boolean) {
-        val player = mediaPlayer ?: return
+        val player = exoPlayer ?: return
         if (!isPrepared) {
             return
         }
@@ -451,7 +552,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
             player.pause()
         }
         stopPositionPersistence()
-        val currentPosition = player.currentPosition.toLong().coerceAtLeast(0L)
+        val currentPosition = player.currentPosition.coerceAtLeast(0L)
         savePlaybackPosition(currentPosition)
         if (AudioFocusPolicy.shouldReleaseRequestAfterPause(shouldResumeOnGain)) {
             unregisterNoisyReceiver()
@@ -461,7 +562,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
     }
 
     private fun setPlayerVolume(volume: Float) {
-        mediaPlayer?.setVolume(volume, volume)
+        exoPlayer?.volume = volume
     }
 
     private fun startPositionPersistence() {
@@ -474,11 +575,11 @@ class PlaybackService : MediaBrowserServiceCompat() {
     }
 
     private fun persistCurrentPosition() {
-        val player = mediaPlayer ?: return
+        val player = exoPlayer ?: return
         if (!isPrepared) {
             return
         }
-        runCatching { player.currentPosition.toLong() }
+        runCatching { player.currentPosition }
             .onSuccess(::savePlaybackPosition)
             .onFailure { Log.w(TAG, "Unable to read the current playback position", it) }
     }
@@ -614,12 +715,13 @@ class PlaybackService : MediaBrowserServiceCompat() {
 
     private fun releasePlayer() {
         stopPositionPersistence()
+        cancelPrepareTimeout()
         persistCurrentPosition()
         resumeOnAudioFocusGain = false
         unregisterNoisyReceiver()
         abandonAudioFocus()
-        mediaPlayer?.release()
-        mediaPlayer = null
+        exoPlayer?.release()
+        exoPlayer = null
         isPrepared = false
     }
 
@@ -723,8 +825,12 @@ class PlaybackService : MediaBrowserServiceCompat() {
                 val notification = buildNotification(state)
                 if (state == PlaybackStateCompat.STATE_PLAYING || state == PlaybackStateCompat.STATE_BUFFERING) {
                     if (!isForeground) {
-                        startForeground(NOTIFICATION_ID, notification)
-                        isForeground = true
+                        try {
+                            startForeground(NOTIFICATION_ID, notification)
+                            isForeground = true
+                        } catch (exception: Exception) {
+                            Log.w(TAG, "Unable to enter the foreground for playback notification", exception)
+                        }
                     } else {
                         NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, notification)
                     }
@@ -827,6 +933,8 @@ class PlaybackService : MediaBrowserServiceCompat() {
         const val EXTRA_TRACK_TITLE = "com.example.audiobookplayer.extra.TRACK_TITLE"
         const val EXTRA_RESTORE_POSITION = "com.example.audiobookplayer.extra.RESTORE_POSITION"
         const val EXTRA_SEEK_POSITION_MS = "com.example.audiobookplayer.extra.SEEK_POSITION_MS"
+        const val EXTRA_ERROR_CODE = "com.example.audiobookplayer.extra.ERROR_CODE"
+        const val EXTRA_ERROR_DETAIL = "com.example.audiobookplayer.extra.ERROR_DETAIL"
         const val EVENT_PLAYBACK_COMPLETED = "com.example.audiobookplayer.event.PLAYBACK_COMPLETED"
         const val EVENT_PLAYBACK_ERROR = "com.example.audiobookplayer.event.PLAYBACK_ERROR"
         const val ACTION_START_PLAYBACK = "com.example.audiobookplayer.action.START_PLAYBACK"
@@ -834,6 +942,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         private const val FOLDER_ID_PREFIX = "folder:"
         private const val TRACK_ID_PREFIX = "track:"
         private const val NOTIFICATION_CHANNEL_ID = "playback"
+        private const val PREPARE_TIMEOUT_MS = 20_000L
         private const val NOTIFICATION_ID = 1001
         private const val CONTENT_INTENT_REQUEST_CODE = 1002
         private const val ART_TARGET_SIZE = 512

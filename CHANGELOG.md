@@ -16,6 +16,12 @@
 - Bookmark clip previews now pause the audiobook instead of overlapping it.
 - Stopped playback releases the service when nothing else is bound.
 - Removed template scaffolding and duplicated helper code.
+- Tapping a track that failed to prepare now retries loading it instead of silently doing nothing.
+- Play now restarts the last track after a stop or failed load instead of being ignored.
+- Playback failures now show a specific reason (unsupported format, damaged file, unreadable file, or load timeout).
+- Added a 20-second prepare watchdog so stalled files fail with a message instead of spinning forever.
+- Replaced the platform MediaPlayer engine with Media3 ExoPlayer 1.11.1 for more tolerant MP4/M4B parsing and detailed failure reporting.
+- Playback no longer aborts when the system denies a foreground-service start (for example, when restoring a track while the phone is locked); loading continues and the notification retries once the app is back in the foreground.
 
 ### v1.0.9 - 2026-03-02
 

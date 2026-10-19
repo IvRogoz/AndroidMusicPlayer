@@ -12,6 +12,7 @@ AudioBookPlayer is an Android app focused on long-form listening, especially aud
 - Playback controls: play/pause, stop, previous/next, skip, scrub, and time jump.
 - Bookmark system with per-book timestamps, clip capture, and grouped bookmark tree.
 - Media session + foreground playback service for lock screen, Bluetooth, and car controls.
+- Browsable Android Auto library with URI-based cover artwork for Android Auto and Android Automotive OS.
 
 ## Latest update (v1.0.9)
 
@@ -28,5 +29,7 @@ The main screen is designed around large cover art. When embedded artwork is ava
 Bookmarks are a core feature. A bookmark button appears on the cover area and can store the current book name with the exact timestamp. A long press on that button opens clip-length choices so a short audio segment can also be captured. Bookmarks are stored in a local Room database, while optional clip audio and cover snapshots are saved as files in app storage and referenced from the database. The right drawer contains a grouped bookmark tree where each book expands to its saved timestamps. Selecting a bookmark attempts to open the original track at the saved position, while a dedicated play/stop toggle on bookmark rows can play the saved clip directly without changing the main player state.
 
 Playback is integrated with Android media APIs through a media browser service and media session. This allows hardware media buttons, Bluetooth head units, and lock screen controls to interact with the app more reliably. The service runs as a foreground media playback service when active, exposes transport controls in a notification, and publishes metadata including title, duration, and embedded artwork so lock screen and external media surfaces can show rich information.
+
+The selected base folder is also exposed as a browsable hierarchy to Android Auto. Playing-item artwork is published both as a bounded bitmap for Bluetooth receivers and as a local `content://` URI for Android Auto and Android Automotive OS. Bluetooth cover display still depends on the phone and head unit supporting AVRCP 1.6 cover art; the app can publish artwork but cannot force unsupported car hardware to render it.
 
 The project uses Kotlin, ViewBinding, RecyclerView-based tree lists, and Room for bookmark persistence. It is intended for local-file playback rather than streaming and is optimized for fast navigation, resume behavior, and audiobook-oriented bookmarking.

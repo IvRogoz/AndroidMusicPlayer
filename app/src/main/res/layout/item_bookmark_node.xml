@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/bookmarkItemRoot"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
@@ -29,7 +30,7 @@
             android:layout_margin="2dp"
             android:contentDescription="@string/bookmarks"
             android:src="@android:drawable/arrow_down_float"
-            android:tint="@android:color/white"
+            app:tint="@android:color/white"
             android:visibility="gone" />
     </FrameLayout>
 
@@ -53,7 +54,7 @@
         android:contentDescription="@string/play_bookmark_clip"
         android:padding="6dp"
         android:src="@android:drawable/ic_media_play"
-        android:tint="@android:color/white"
+        app:tint="@android:color/white"
         android:visibility="gone" />
 
 </LinearLayout>

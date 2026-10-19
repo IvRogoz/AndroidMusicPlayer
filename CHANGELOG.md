@@ -1,5 +1,18 @@
 ## Changelog
 
+### Unreleased
+
+- Migrated the application to Android 16 (compile/target API 36) with current foreground-service, notification, edge-to-edge, and safer-intent handling.
+- Upgraded the build toolchain to Android Gradle Plugin 8.12.3 and Gradle 8.13.
+- Fixed transient and delayed audio-focus recovery.
+- Made Stop publish a real stopped state and release playback resources.
+- Added a browsable Android Auto media hierarchy with playable audiobook items.
+- Added URI-based cover artwork for Android Auto and Android Automotive OS while retaining bitmap metadata for Bluetooth receivers.
+- Published richer embedded title, artist, album, author, genre, track, and artwork metadata.
+- Closed artwork workers with their UI owners and made the Room database process-scoped.
+- Added validated time-input parsing tests and actionable playback/artwork logging.
+- Corrected the source package version to 1.0.9 (version code 10).
+
 ### v1.0.9 - 2026-03-02
 
 - Added sideload artifact: `releases/AudioBookPlayer-v1.0.9-debug-sideload.apk`.

@@ -14,6 +14,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.example.audiobookplayer.databinding.ItemBookmarkNodeBinding
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import android.util.LruCache
 import com.example.audiobookplayer.bookmarks.BookmarkEntity
 
@@ -24,6 +25,7 @@ class BookmarkTreeAdapter(
 
     private val executor = Executors.newFixedThreadPool(2)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val closed = AtomicBoolean(false)
     private val cache = object : LruCache<String, Bitmap>(MAX_CACHE_SIZE) {
         override fun sizeOf(key: String, value: Bitmap): Int {
             return value.byteCount
@@ -110,6 +112,9 @@ class BookmarkTreeAdapter(
     }
 
     private fun loadCoverImage(path: String?, imageView: android.widget.ImageView) {
+        if (closed.get()) {
+            return
+        }
         if (path.isNullOrBlank()) {
             imageView.setImageResource(R.drawable.ic_bookmark)
             ImageViewCompat.setImageTintList(
@@ -140,11 +145,19 @@ class BookmarkTreeAdapter(
                 cache.put(path, bitmap)
             }
             mainHandler.post {
-                if (imageView.tag == path && bitmap != null) {
+                if (!closed.get() && imageView.tag == path && bitmap != null) {
                     imageView.setImageBitmap(bitmap)
                     ImageViewCompat.setImageTintList(imageView, null)
                 }
             }
+        }
+    }
+
+    fun close() {
+        if (closed.compareAndSet(false, true)) {
+            mainHandler.removeCallbacksAndMessages(null)
+            executor.shutdownNow()
+            cache.evictAll()
         }
     }
 

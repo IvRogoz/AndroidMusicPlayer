@@ -13,7 +13,6 @@ import android.os.Build
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
-import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
@@ -21,6 +20,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.support.v4.media.MediaBrowserCompat
+import android.support.v4.media.MediaDescriptionCompat
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -28,8 +28,11 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
 import androidx.media.MediaBrowserServiceCompat
 import androidx.media.session.MediaButtonReceiver
+import android.util.Log
+import java.util.ArrayDeque
 import java.util.concurrent.Executors
 
 class PlaybackService : MediaBrowserServiceCompat() {
@@ -42,24 +45,46 @@ class PlaybackService : MediaBrowserServiceCompat() {
     private var currentTitle: String? = null
     private var currentDurationMs: Long = 0L
     private var currentArtwork: Bitmap? = null
+    private var currentArtworkUri: Uri? = null
+    private var currentArtist: String? = null
+    private var currentAlbum: String? = null
+    private var currentAuthor: String? = null
+    private var currentGenre: String? = null
+    private var currentTrackNumber: Long? = null
     private var isForeground = false
+    private var isDestroyed = false
     private val audioManager by lazy {
         getSystemService(Context.AUDIO_SERVICE) as AudioManager
     }
     private var audioFocusRequest: AudioFocusRequest? = null
     private var hasAudioFocus = false
+    private var audioFocusRequestActive = false
     private var resumeOnAudioFocusGain = false
     private var noisyReceiverRegistered = false
     private val artExecutor = Executors.newSingleThreadExecutor()
+    private val browseExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS -> pauseForExternalAudioChange(shouldResumeOnGain = false)
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> pauseForExternalAudioChange(shouldResumeOnGain = true)
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                hasAudioFocus = false
+                pauseForExternalAudioChange(shouldResumeOnGain = false)
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                hasAudioFocus = false
+                pauseForExternalAudioChange(shouldResumeOnGain = true)
+            }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> setPlayerVolume(DUCKED_VOLUME)
             AudioManager.AUDIOFOCUS_GAIN -> {
+                hasAudioFocus = true
+                audioFocusRequestActive = true
                 setPlayerVolume(NORMAL_VOLUME)
-                if (resumeOnAudioFocusGain && isPrepared && mediaPlayer?.isPlaying == false) {
+                if (AudioFocusPolicy.shouldResumeOnGain(
+                        resumePending = resumeOnAudioFocusGain,
+                        isPrepared = isPrepared,
+                        isPlaying = mediaPlayer?.isPlaying == true
+                    )
+                ) {
                     resumeOnAudioFocusGain = false
                     startPlayback()
                 }
@@ -96,7 +121,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         MediaButtonReceiver.handleIntent(mediaSession, intent)
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onGetRoot(
@@ -108,10 +133,21 @@ class PlaybackService : MediaBrowserServiceCompat() {
     }
 
     override fun onLoadChildren(parentId: String, result: Result<MutableList<MediaBrowserCompat.MediaItem>>) {
-        result.sendResult(mutableListOf())
+        result.detach()
+        browseExecutor.execute {
+            val children = runCatching { loadBrowseChildren(parentId) }
+                .onFailure { Log.w(TAG, "Unable to load media browser children", it) }
+                .getOrDefault(mutableListOf())
+            mainHandler.post {
+                if (!isDestroyed) {
+                    result.sendResult(children)
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
+        isDestroyed = true
         stopPositionPersistence()
         persistCurrentPosition()
         unregisterNoisyReceiver()
@@ -119,6 +155,8 @@ class PlaybackService : MediaBrowserServiceCompat() {
         stopForegroundNow()
         NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID)
         artExecutor.shutdownNow()
+        browseExecutor.shutdownNow()
+        mainHandler.removeCallbacksAndMessages(null)
         releasePlayer()
         mediaSession.release()
         super.onDestroy()
@@ -155,8 +193,42 @@ class PlaybackService : MediaBrowserServiceCompat() {
             prepareFromUri(uri, extras, playWhenReady = true)
         }
 
+        override fun onPlayFromMediaId(mediaId: String, extras: Bundle?) {
+            playFromMediaId(mediaId, extras, playWhenReady = true)
+        }
+
+        override fun onPlayFromSearch(query: String?, extras: Bundle?) {
+            val normalizedQuery = query?.trim().orEmpty()
+            if (normalizedQuery.isBlank()) {
+                onPlay()
+                return
+            }
+            browseExecutor.execute {
+                val match = runCatching { findAudioByTitle(normalizedQuery) }
+                    .onFailure { Log.w(TAG, "Unable to search the media library", it) }
+                    .getOrNull()
+                mainHandler.post {
+                    if (isDestroyed) {
+                        return@post
+                    }
+                    if (match == null) {
+                        mediaSession.sendSessionEvent(EVENT_PLAYBACK_ERROR, null)
+                    } else {
+                        val resolvedExtras = Bundle(extras ?: Bundle()).apply {
+                            putString(EXTRA_TRACK_TITLE, match.name)
+                        }
+                        prepareFromUri(match.uri, resolvedExtras, playWhenReady = true)
+                    }
+                }
+            }
+        }
+
         override fun onPrepareFromUri(uri: Uri, extras: Bundle?) {
             prepareFromUri(uri, extras, playWhenReady = false)
+        }
+
+        override fun onPrepareFromMediaId(mediaId: String, extras: Bundle?) {
+            playFromMediaId(mediaId, extras, playWhenReady = false)
         }
 
         override fun onPause() {
@@ -176,28 +248,12 @@ class PlaybackService : MediaBrowserServiceCompat() {
         }
 
         override fun onStop() {
-            val player = mediaPlayer
-            if (player != null && isPrepared) {
-                try {
-                    if (player.isPlaying) {
-                        player.pause()
-                    }
-                } catch (exception: Exception) {
-                }
-                stopPositionPersistence()
-                val currentPosition = player.currentPosition.toLong().coerceAtLeast(0L)
-                savePlaybackPosition(currentPosition)
-                resumeOnAudioFocusGain = false
-                unregisterNoisyReceiver()
-                abandonAudioFocus()
-                updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, currentPosition)
-            } else {
-                stopPositionPersistence()
-                resumeOnAudioFocusGain = false
-                unregisterNoisyReceiver()
-                abandonAudioFocus()
-                updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, 0L)
+            val position = mediaPlayer?.takeIf { isPrepared }?.currentPosition?.toLong()?.coerceAtLeast(0L) ?: 0L
+            if (isPrepared) {
+                savePlaybackPosition(position)
             }
+            releasePlayer()
+            updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, position)
         }
 
         override fun onSeekTo(pos: Long) {
@@ -217,14 +273,96 @@ class PlaybackService : MediaBrowserServiceCompat() {
         }
     }
 
+    private fun playFromMediaId(mediaId: String, extras: Bundle?, playWhenReady: Boolean) {
+        if (!mediaId.startsWith(TRACK_ID_PREFIX)) {
+            mediaSession.sendSessionEvent(EVENT_PLAYBACK_ERROR, null)
+            return
+        }
+        val uri = Uri.parse(mediaId.removePrefix(TRACK_ID_PREFIX))
+        val title = DocumentFile.fromSingleUri(this, uri)?.name
+        val resolvedExtras = Bundle(extras ?: Bundle()).apply {
+            if (getString(EXTRA_TRACK_TITLE).isNullOrBlank() && !title.isNullOrBlank()) {
+                putString(EXTRA_TRACK_TITLE, title)
+            }
+        }
+        prepareFromUri(uri, resolvedExtras, playWhenReady)
+    }
+
+    private fun loadBrowseChildren(parentId: String): MutableList<MediaBrowserCompat.MediaItem> {
+        val directory = when {
+            parentId == ROOT_ID -> {
+                val rootUri = preferences.getString(PlaybackPrefs.KEY_TREE_URI, null) ?: return mutableListOf()
+                DocumentFile.fromTreeUri(this, Uri.parse(rootUri))
+            }
+            parentId.startsWith(FOLDER_ID_PREFIX) -> {
+                DocumentFile.fromSingleUri(this, Uri.parse(parentId.removePrefix(FOLDER_ID_PREFIX)))
+            }
+            else -> null
+        } ?: return mutableListOf()
+
+        return directory.listFiles()
+            .filter { it.isDirectory || isAudioDocument(it) }
+            .sortedWith(compareBy<DocumentFile>({ !it.isDirectory }, { it.name?.lowercase().orEmpty() }))
+            .map { document ->
+                val isDirectory = document.isDirectory
+                val description = MediaDescriptionCompat.Builder()
+                    .setMediaId((if (isDirectory) FOLDER_ID_PREFIX else TRACK_ID_PREFIX) + document.uri)
+                    .setTitle(document.name ?: getString(R.string.unknown_track))
+                    .apply {
+                        if (!isDirectory) {
+                            setMediaUri(document.uri)
+                            setIconUri(CoverArtProvider.artworkUri(this@PlaybackService, document.uri))
+                        }
+                    }
+                    .build()
+                MediaBrowserCompat.MediaItem(
+                    description,
+                    if (isDirectory) MediaBrowserCompat.MediaItem.FLAG_BROWSABLE
+                    else MediaBrowserCompat.MediaItem.FLAG_PLAYABLE
+                )
+            }
+            .toMutableList()
+    }
+
+    private fun isAudioDocument(document: DocumentFile): Boolean {
+        val mimeType = document.type
+        if (mimeType?.startsWith("audio/") == true) {
+            return true
+        }
+        val extension = document.name?.substringAfterLast('.', "")?.lowercase().orEmpty()
+        return extension in AUDIO_EXTENSIONS
+    }
+
+    private fun findAudioByTitle(query: String): DocumentFile? {
+        val rootUri = preferences.getString(PlaybackPrefs.KEY_TREE_URI, null) ?: return null
+        val root = DocumentFile.fromTreeUri(this, Uri.parse(rootUri)) ?: return null
+        val directories = ArrayDeque<DocumentFile>().apply { add(root) }
+        while (directories.isNotEmpty()) {
+            directories.removeFirst().listFiles().forEach { document ->
+                when {
+                    document.isDirectory -> directories.addLast(document)
+                    isAudioDocument(document) && document.name?.contains(query, ignoreCase = true) == true -> {
+                        return document
+                    }
+                }
+            }
+        }
+        return null
+    }
+
     private fun prepareFromUri(uri: Uri, extras: Bundle?, playWhenReady: Boolean) {
         releasePlayer()
         currentUri = uri
-        currentTitle = extras?.getString(EXTRA_TRACK_TITLE)
-            ?: preferences.getString(PlaybackPrefs.KEY_LAST_TRACK_TITLE, null)
+        currentTitle = extras?.getString(EXTRA_TRACK_TITLE)?.takeIf { it.isNotBlank() }
         currentArtwork = null
+        currentArtworkUri = null
+        currentArtist = null
+        currentAlbum = null
+        currentAuthor = null
+        currentGenre = null
+        currentTrackNumber = null
         isPrepared = false
-        loadArtworkAsync(uri)
+        loadMetadataAsync(uri)
         val player = MediaPlayer()
         mediaPlayer = player
         player.setAudioAttributes(
@@ -262,7 +400,8 @@ class PlaybackService : MediaBrowserServiceCompat() {
             updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, 0L)
             mediaSession.sendSessionEvent(EVENT_PLAYBACK_COMPLETED, null)
         }
-        player.setOnErrorListener { _, _, _ ->
+        player.setOnErrorListener { _, what, extra ->
+            Log.e(TAG, "MediaPlayer error what=$what extra=$extra for $uri")
             stopPositionPersistence()
             resumeOnAudioFocusGain = false
             unregisterNoisyReceiver()
@@ -278,6 +417,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
             updatePlaybackState(PlaybackStateCompat.STATE_BUFFERING, 0L)
             saveCurrentTrack(uri, currentTitle)
         } catch (exception: Exception) {
+            Log.e(TAG, "Unable to prepare audio source $uri", exception)
             stopPositionPersistence()
             resumeOnAudioFocusGain = false
             unregisterNoisyReceiver()
@@ -320,8 +460,10 @@ class PlaybackService : MediaBrowserServiceCompat() {
         stopPositionPersistence()
         val currentPosition = player.currentPosition.toLong().coerceAtLeast(0L)
         savePlaybackPosition(currentPosition)
-        unregisterNoisyReceiver()
-        abandonAudioFocus()
+        if (AudioFocusPolicy.shouldReleaseRequestAfterPause(shouldResumeOnGain)) {
+            unregisterNoisyReceiver()
+            abandonAudioFocus()
+        }
         updatePlaybackState(PlaybackStateCompat.STATE_PAUSED, currentPosition)
     }
 
@@ -343,7 +485,9 @@ class PlaybackService : MediaBrowserServiceCompat() {
         if (!isPrepared) {
             return
         }
-        savePlaybackPosition(player.currentPosition.toLong())
+        runCatching { player.currentPosition.toLong() }
+            .onSuccess(::savePlaybackPosition)
+            .onFailure { Log.w(TAG, "Unable to read the current playback position", it) }
     }
 
     private fun updatePlaybackState(state: Int, position: Long) {
@@ -358,7 +502,10 @@ class PlaybackService : MediaBrowserServiceCompat() {
 
     private fun buildPlaybackActions(): Long {
         var actions = PlaybackStateCompat.ACTION_PLAY or
+            PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID or
+            PlaybackStateCompat.ACTION_PLAY_FROM_SEARCH or
             PlaybackStateCompat.ACTION_PLAY_FROM_URI or
+            PlaybackStateCompat.ACTION_PREPARE_FROM_MEDIA_ID or
             PlaybackStateCompat.ACTION_PREPARE_FROM_URI or
             PlaybackStateCompat.ACTION_PLAY_PAUSE or
             PlaybackStateCompat.ACTION_STOP
@@ -373,13 +520,28 @@ class PlaybackService : MediaBrowserServiceCompat() {
     private fun updateMetadata() {
         val title = currentTitle ?: currentUri?.lastPathSegment.orEmpty()
         val metadataBuilder = MediaMetadataCompat.Builder()
+            .putString(MediaMetadataCompat.METADATA_KEY_MEDIA_ID, currentUri?.toString())
+            .putString(MediaMetadataCompat.METADATA_KEY_MEDIA_URI, currentUri?.toString())
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
             .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE, title)
             .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, currentDurationMs)
+        currentArtist?.let {
+            metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_ARTIST, it)
+            metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, it)
+        }
+        currentAlbum?.let { metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM, it) }
+        currentAuthor?.let { metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_AUTHOR, it) }
+        currentGenre?.let { metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_GENRE, it) }
+        currentTrackNumber?.let { metadataBuilder.putLong(MediaMetadataCompat.METADATA_KEY_TRACK_NUMBER, it) }
         currentArtwork?.let { artwork ->
             metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, artwork)
             metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, artwork)
             metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, artwork)
+        }
+        currentArtworkUri?.toString()?.let { artworkUri ->
+            metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_ART_URI, artworkUri)
+            metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, artworkUri)
+            metadataBuilder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI, artworkUri)
         }
         val metadata = metadataBuilder.build()
         mediaSession.setMetadata(metadata)
@@ -387,29 +549,31 @@ class PlaybackService : MediaBrowserServiceCompat() {
         updatePlaybackNotification(state)
     }
 
-    private fun loadArtworkAsync(uri: Uri) {
+    private fun loadMetadataAsync(uri: Uri) {
         val uriKey = uri.toString()
         artExecutor.execute {
-            val bitmap = loadEmbeddedArtwork(uri)
+            val embeddedMetadata = EmbeddedAudioMetadata.read(this, uri)
+            val bitmap = embeddedMetadata?.artwork?.let { decodeArtwork(it, ART_TARGET_SIZE) }
             mainHandler.post {
-                if (currentUri?.toString() == uriKey) {
+                if (!isDestroyed && currentUri?.toString() == uriKey) {
+                    if (currentTitle.isNullOrBlank()) {
+                        currentTitle = embeddedMetadata?.title ?: uri.lastPathSegment
+                    }
+                    currentArtist = embeddedMetadata?.artist
+                    currentAlbum = embeddedMetadata?.album
+                    currentAuthor = embeddedMetadata?.author
+                    currentGenre = embeddedMetadata?.genre
+                    currentTrackNumber = embeddedMetadata?.trackNumber
                     currentArtwork = bitmap
+                    currentArtworkUri = if (embeddedMetadata?.artwork != null) {
+                        CoverArtProvider.artworkUri(this, uri)
+                    } else {
+                        null
+                    }
+                    saveCurrentTrack(uri, currentTitle)
                     updateMetadata()
                 }
             }
-        }
-    }
-
-    private fun loadEmbeddedArtwork(uri: Uri): Bitmap? {
-        val retriever = MediaMetadataRetriever()
-        return try {
-            retriever.setDataSource(this, uri)
-            val art = retriever.embeddedPicture ?: return null
-            decodeArtwork(art, ART_TARGET_SIZE)
-        } catch (exception: Exception) {
-            null
-        } finally {
-            retriever.release()
         }
     }
 
@@ -422,7 +586,22 @@ class PlaybackService : MediaBrowserServiceCompat() {
             inSampleSize = calculateInSampleSize(bounds, targetSize, targetSize)
             inJustDecodeBounds = false
         }
-        return BitmapFactory.decodeByteArray(data, 0, data.size, options)
+        val decoded = BitmapFactory.decodeByteArray(data, 0, data.size, options) ?: return null
+        val largestDimension = maxOf(decoded.width, decoded.height)
+        if (largestDimension <= targetSize) {
+            return decoded
+        }
+        val scale = targetSize.toFloat() / largestDimension.toFloat()
+        return Bitmap.createScaledBitmap(
+            decoded,
+            (decoded.width * scale).toInt().coerceAtLeast(1),
+            (decoded.height * scale).toInt().coerceAtLeast(1),
+            true
+        ).also { scaled ->
+            if (scaled !== decoded) {
+                decoded.recycle()
+            }
+        }
     }
 
     private fun calculateInSampleSize(
@@ -448,7 +627,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         preferences.edit()
             .putString(PlaybackPrefs.KEY_LAST_TRACK_URI, uri)
             .putLong(PlaybackPrefs.KEY_LAST_POSITION, positionMs)
-            .commit()
+            .apply()
     }
 
     private fun saveCurrentTrack(uri: Uri, title: String?) {
@@ -472,6 +651,9 @@ class PlaybackService : MediaBrowserServiceCompat() {
     private fun ensureAudioFocus(): Boolean {
         if (hasAudioFocus) {
             return true
+        }
+        if (audioFocusRequestActive) {
+            return false
         }
         val focusResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val request = audioFocusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
@@ -498,23 +680,26 @@ class PlaybackService : MediaBrowserServiceCompat() {
         return when (focusResult) {
             AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
                 hasAudioFocus = true
+                audioFocusRequestActive = true
                 resumeOnAudioFocusGain = false
                 true
             }
             AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
                 hasAudioFocus = false
+                audioFocusRequestActive = true
                 resumeOnAudioFocusGain = true
                 false
             }
             else -> {
                 hasAudioFocus = false
+                audioFocusRequestActive = false
                 false
             }
         }
     }
 
     private fun abandonAudioFocus() {
-        if (!hasAudioFocus) {
+        if (!audioFocusRequestActive) {
             return
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -526,6 +711,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
             audioManager.abandonAudioFocus(audioFocusChangeListener)
         }
         hasAudioFocus = false
+        audioFocusRequestActive = false
     }
 
     private fun registerNoisyReceiver() {
@@ -549,6 +735,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         try {
             unregisterReceiver(becomingNoisyReceiver)
         } catch (exception: IllegalArgumentException) {
+            Log.w(TAG, "Noisy-audio receiver was already unregistered", exception)
         }
         noisyReceiverRegistered = false
     }
@@ -608,7 +795,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_bookmark)
             .setContentTitle(title)
-            .setContentText(getString(R.string.app_name))
+            .setContentText(currentArtist ?: currentAlbum ?: getString(R.string.app_name))
             .setLargeIcon(currentArtwork)
             .setContentIntent(createContentIntent())
             .setDeleteIntent(MediaButtonReceiver.buildMediaButtonPendingIntent(this, PlaybackStateCompat.ACTION_STOP))
@@ -650,7 +837,9 @@ class PlaybackService : MediaBrowserServiceCompat() {
     }
 
     private fun ensureServiceStartedForPlayback() {
-        val serviceIntent = Intent(this, PlaybackService::class.java)
+        val serviceIntent = Intent(this, PlaybackService::class.java).apply {
+            action = ACTION_START_PLAYBACK
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             ContextCompat.startForegroundService(this, serviceIntent)
         } else {
@@ -665,7 +854,10 @@ class PlaybackService : MediaBrowserServiceCompat() {
         const val EXTRA_SEEK_POSITION_MS = "com.example.audiobookplayer.extra.SEEK_POSITION_MS"
         const val EVENT_PLAYBACK_COMPLETED = "com.example.audiobookplayer.event.PLAYBACK_COMPLETED"
         const val EVENT_PLAYBACK_ERROR = "com.example.audiobookplayer.event.PLAYBACK_ERROR"
+        const val ACTION_START_PLAYBACK = "com.example.audiobookplayer.action.START_PLAYBACK"
         private const val ROOT_ID = "root"
+        private const val FOLDER_ID_PREFIX = "folder:"
+        private const val TRACK_ID_PREFIX = "track:"
         private const val NOTIFICATION_CHANNEL_ID = "playback"
         private const val NOTIFICATION_ID = 1001
         private const val CONTENT_INTENT_REQUEST_CODE = 1002
@@ -673,5 +865,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         private const val POSITION_SAVE_INTERVAL_MS = 2_000L
         private const val NORMAL_VOLUME = 1f
         private const val DUCKED_VOLUME = 0.25f
+        private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "m4b")
+        private const val TAG = "PlaybackService"
     }
 }

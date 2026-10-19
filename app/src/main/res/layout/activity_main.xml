@@ -8,6 +8,7 @@
     tools:context=".MainActivity">
 
     <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/mainContent"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="@android:color/black">
@@ -57,7 +58,7 @@
             android:contentDescription="@string/bookmark_track"
             android:padding="8dp"
             android:src="@drawable/ic_bookmark"
-            android:tint="@android:color/white"
+            app:tint="@android:color/white"
             app:layout_constraintBottom_toBottomOf="@id/albumArtLarge"
             app:layout_constraintEnd_toEndOf="@id/albumArtLarge" />
 
@@ -135,7 +136,7 @@
                     android:contentDescription="@string/back_button"
                     android:padding="8dp"
                     android:src="@android:drawable/ic_media_previous"
-                    android:tint="@android:color/white" />
+                    app:tint="@android:color/white" />
 
                 <ImageButton
                     android:id="@+id/playPauseButton"
@@ -147,7 +148,7 @@
                     android:contentDescription="@string/play_button"
                     android:padding="8dp"
                     android:src="@android:drawable/ic_media_play"
-                    android:tint="@android:color/white" />
+                    app:tint="@android:color/white" />
 
                 <ImageButton
                     android:id="@+id/stopButton"
@@ -159,7 +160,7 @@
                     android:contentDescription="@string/stop_button"
                     android:padding="8dp"
                     android:src="@drawable/ic_stop"
-                    android:tint="@android:color/white" />
+                    app:tint="@android:color/white" />
 
                 <ImageButton
                     android:id="@+id/nextButton"
@@ -171,7 +172,7 @@
                     android:contentDescription="@string/next_button"
                     android:padding="8dp"
                     android:src="@android:drawable/ic_media_next"
-                    android:tint="@android:color/white" />
+                    app:tint="@android:color/white" />
             </LinearLayout>
 
             <LinearLayout
@@ -190,7 +191,7 @@
                     android:contentDescription="@string/skip_back_default"
                     android:padding="6dp"
                     android:src="@android:drawable/ic_media_rew"
-                    android:tint="@android:color/white" />
+                    app:tint="@android:color/white" />
 
                 <ImageButton
                     android:id="@+id/timeJumpButton"
@@ -202,7 +203,7 @@
                     android:contentDescription="@string/time_jump"
                     android:padding="6dp"
                     android:src="@android:drawable/ic_menu_recent_history"
-                    android:tint="@android:color/white" />
+                    app:tint="@android:color/white" />
 
                 <ImageButton
                     android:id="@+id/skipForwardButton"
@@ -214,7 +215,7 @@
                     android:contentDescription="@string/skip_forward_default"
                     android:padding="6dp"
                     android:src="@android:drawable/ic_media_ff"
-                    android:tint="@android:color/white" />
+                    app:tint="@android:color/white" />
             </LinearLayout>
         </LinearLayout>
 
@@ -227,7 +228,7 @@
             android:contentDescription="@string/open_drawer"
             android:padding="8dp"
             android:src="@drawable/ic_menu"
-            android:tint="@android:color/white"
+            app:tint="@android:color/white"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
 
@@ -240,7 +241,7 @@
             android:contentDescription="@string/open_bookmarks"
             android:padding="8dp"
             android:src="@drawable/ic_bookmark"
-            android:tint="@android:color/white"
+            app:tint="@android:color/white"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
 

@@ -1,7 +1,9 @@
 package com.example.audiobookplayer
 
+import android.Manifest
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.RenderEffect
 import android.graphics.Shader
@@ -22,14 +24,18 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.EditText
 import android.widget.Toast
+import android.util.Log
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.PopupMenu
 import androidx.core.view.GravityCompat
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.room.Room
 import android.support.v4.media.MediaBrowserCompat
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaControllerCompat
@@ -51,9 +57,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var artLoader: AudioArtLoader
     private val preferences by lazy { getSharedPreferences(PlaybackPrefs.PREFS_NAME, MODE_PRIVATE) }
     private val ioExecutor = Executors.newSingleThreadExecutor()
-    private val bookmarkDatabase by lazy {
-        Room.databaseBuilder(applicationContext, BookmarkDatabase::class.java, "bookmarks.db").build()
-    }
+    private val bookmarkDatabase by lazy { BookmarkDatabase.getInstance(applicationContext) }
     private val progressHandler = Handler(Looper.getMainLooper())
 
     private var mediaBrowser: MediaBrowserCompat? = null
@@ -80,6 +84,10 @@ class MainActivity : AppCompatActivity() {
     private var pendingRestoreTrack: AudioFile? = null
     private var skipAutoRestoreTrack = false
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+
     private val progressRunnable = object : Runnable {
         override fun run() {
             updateProgress()
@@ -89,7 +97,13 @@ class MainActivity : AppCompatActivity() {
 
     private val selectFolderLauncher = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
-            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            try {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (exception: SecurityException) {
+                Log.e(TAG, "Unable to retain access to selected folder $uri", exception)
+                Toast.makeText(this, getString(R.string.folder_permission_failed), Toast.LENGTH_LONG).show()
+                return@registerForActivityResult
+            }
             val previousUri = preferences.getString(PlaybackPrefs.KEY_TREE_URI, null)
             if (previousUri != uri.toString()) {
                 expandedFolders.clear()
@@ -102,9 +116,7 @@ class MainActivity : AppCompatActivity() {
     private val mediaControllerCallback = object : MediaControllerCompat.Callback() {
         override fun onPlaybackStateChanged(state: PlaybackStateCompat?) {
             playbackState = state
-            val prepared = state != null &&
-                state.state != PlaybackStateCompat.STATE_NONE &&
-                state.state != PlaybackStateCompat.STATE_BUFFERING
+            val prepared = isPlaybackPrepared(state)
             if (prepared != isPrepared) {
                 isPrepared = prepared
                 setPlaybackControlsEnabled(prepared)
@@ -155,8 +167,7 @@ class MainActivity : AppCompatActivity() {
             MediaControllerCompat.setMediaController(this@MainActivity, controller)
             controller.registerCallback(mediaControllerCallback)
             playbackState = controller.playbackState
-            val prepared = playbackState?.state != PlaybackStateCompat.STATE_NONE &&
-                playbackState?.state != PlaybackStateCompat.STATE_BUFFERING
+            val prepared = isPlaybackPrepared(playbackState)
             isPrepared = prepared
             setPlaybackControlsEnabled(prepared)
             controller.metadata?.let { metadata ->
@@ -206,8 +217,51 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         skipAutoRestoreTrack = savedInstanceState != null
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        val mainContentPadding = intArrayOf(
+            binding.mainContent.paddingLeft,
+            binding.mainContent.paddingTop,
+            binding.mainContent.paddingRight,
+            binding.mainContent.paddingBottom
+        )
+        val libraryDrawerPadding = intArrayOf(
+            binding.drawerContainer.paddingLeft,
+            binding.drawerContainer.paddingTop,
+            binding.drawerContainer.paddingRight,
+            binding.drawerContainer.paddingBottom
+        )
+        val bookmarkDrawerPadding = intArrayOf(
+            binding.bookmarkDrawerContainer.paddingLeft,
+            binding.bookmarkDrawerContainer.paddingTop,
+            binding.bookmarkDrawerContainer.paddingRight,
+            binding.bookmarkDrawerContainer.paddingBottom
+        )
+        ViewCompat.setOnApplyWindowInsetsListener(binding.drawerLayout) { _, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            binding.mainContent.setPadding(
+                mainContentPadding[0] + systemBars.left,
+                mainContentPadding[1] + systemBars.top,
+                mainContentPadding[2] + systemBars.right,
+                mainContentPadding[3] + systemBars.bottom
+            )
+            binding.drawerContainer.setPadding(
+                libraryDrawerPadding[0] + systemBars.left,
+                libraryDrawerPadding[1] + systemBars.top,
+                libraryDrawerPadding[2],
+                libraryDrawerPadding[3] + systemBars.bottom
+            )
+            binding.bookmarkDrawerContainer.setPadding(
+                bookmarkDrawerPadding[0],
+                bookmarkDrawerPadding[1] + systemBars.top,
+                bookmarkDrawerPadding[2] + systemBars.right,
+                bookmarkDrawerPadding[3] + systemBars.bottom
+            )
+            insets
+        }
+        ViewCompat.requestApplyInsets(binding.drawerLayout)
+        requestNotificationPermissionIfNeeded()
 
         mediaBrowser = MediaBrowserCompat(
             this,
@@ -334,9 +388,15 @@ class MainActivity : AppCompatActivity() {
         playbackState = null
         mediaBrowser?.disconnect()
         mediaBrowser = null
-        bookmarkDatabase.close()
+        stopProgressUpdates()
+        if (::artLoader.isInitialized) {
+            artLoader.close()
+        }
+        if (::bookmarkAdapter.isInitialized) {
+            bookmarkAdapter.close()
+        }
+        ioExecutor.shutdownNow()
         super.onDestroy()
-        ioExecutor.shutdown()
     }
 
     private fun restoreLastFolder() {
@@ -345,6 +405,15 @@ class MainActivity : AppCompatActivity() {
             loadAudioTree(Uri.parse(uriString))
         } else {
             binding.folderLabel.text = getString(R.string.no_folder_selected)
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
@@ -360,7 +429,7 @@ class MainActivity : AppCompatActivity() {
             }
             val lastTrackUri = preferences.getString(PlaybackPrefs.KEY_LAST_TRACK_URI, null)
             val lastTrackTitle = preferences.getString(PlaybackPrefs.KEY_LAST_TRACK_TITLE, null)
-            runOnUiThread {
+            runOnUiThreadIfActive {
                 treeRoots = rootNodes
                 updateTreeList()
                 audioFiles = audioItems
@@ -370,7 +439,7 @@ class MainActivity : AppCompatActivity() {
                         if (hasActiveServiceSession()) {
                             syncSelectionToActivePlayback(lastTrack)
                         }
-                        return@runOnUiThread
+                        return@runOnUiThreadIfActive
                     }
                     if (mediaController == null) {
                         pendingRestoreTrack = lastTrack
@@ -528,7 +597,7 @@ class MainActivity : AppCompatActivity() {
             val bookmarks = bookmarkDatabase.bookmarkDao().getAll()
             val roots = buildBookmarkTree(bookmarks)
             val rootIds = roots.map { it.id }.toSet()
-            runOnUiThread {
+            runOnUiThreadIfActive {
                 expandedBookmarkIds.retainAll(rootIds)
                 bookmarkRoots = roots
                 updateBookmarkList()
@@ -646,6 +715,7 @@ class MainActivity : AppCompatActivity() {
             player.prepare()
             player.start()
         } catch (exception: Exception) {
+            Log.w(TAG, "Unable to play bookmark clip", exception)
             stopBookmarkClipPlayback()
         }
     }
@@ -702,6 +772,7 @@ class MainActivity : AppCompatActivity() {
             retriever.setDataSource(this, uri)
             retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
         } catch (exception: Exception) {
+            Log.w(TAG, "Unable to read duration for $uri", exception)
             0L
         } finally {
             retriever.release()
@@ -1022,7 +1093,7 @@ class MainActivity : AppCompatActivity() {
                 clipPath != null -> R.string.bookmark_saved_clip
                 else -> R.string.bookmark_saved_clip_failed
             }
-            runOnUiThread {
+            runOnUiThreadIfActive {
                 expandedBookmarkIds.retainAll(updatedRootIds)
                 bookmarkRoots = updatedRoots
                 updateBookmarkList()
@@ -1046,6 +1117,7 @@ class MainActivity : AppCompatActivity() {
             }
             coverFile.absolutePath
         } catch (exception: Exception) {
+            Log.e(TAG, "Unable to save bookmark cover", exception)
             coverFile.delete()
             null
         }
@@ -1135,13 +1207,20 @@ class MainActivity : AppCompatActivity() {
                     continue
                 }
                 bufferInfo.presentationTimeUs = (sampleTimeUs - startUs).coerceAtLeast(0L)
-                bufferInfo.flags = extractor.sampleFlags
+                bufferInfo.flags = if (
+                    extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0
+                ) {
+                    MediaCodec.BUFFER_FLAG_KEY_FRAME
+                } else {
+                    0
+                }
                 muxer.writeSampleData(muxerTrackIndex, buffer, bufferInfo)
                 wroteSample = true
                 extractor.advance()
             }
             wroteSample
         } catch (exception: Exception) {
+            Log.e(TAG, "Unable to create bookmark audio clip", exception)
             false
         } finally {
             if (started) {
@@ -1332,7 +1411,7 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, getString(R.string.seek_unavailable), Toast.LENGTH_SHORT).show()
             return
         }
-        val millis = parseTimeInput(input)
+        val millis = TimeInputParser.parseMilliseconds(input)
         if (millis == null) {
             Toast.makeText(this, getString(R.string.seek_invalid), Toast.LENGTH_SHORT).show()
             return
@@ -1345,17 +1424,15 @@ class MainActivity : AppCompatActivity() {
         updateProgress()
     }
 
-    private fun parseTimeInput(value: String): Long? {
-        val parts = value.split(":").map { it.trim() }
-        if (parts.any { it.isEmpty() }) {
-            return null
-        }
-        val numbers = parts.map { it.toLongOrNull() ?: return null }
-        return when (numbers.size) {
-            1 -> numbers[0] * 1000L
-            2 -> (numbers[0] * 60 + numbers[1]) * 1000L
-            3 -> (numbers[0] * 3600 + numbers[1] * 60 + numbers[2]) * 1000L
-            else -> null
+    private fun isPlaybackPrepared(state: PlaybackStateCompat?): Boolean {
+        return state != null && PlaybackReadiness.isPrepared(state.actions)
+    }
+
+    private inline fun runOnUiThreadIfActive(crossinline action: () -> Unit) {
+        runOnUiThread {
+            if (!isFinishing && !isDestroyed) {
+                action()
+            }
         }
     }
 
@@ -1372,5 +1449,6 @@ class MainActivity : AppCompatActivity() {
         private val BOOKMARK_CLIP_MIME_TYPES = setOf("audio/mp4a-latm", "audio/aac")
         private val SKIP_OPTIONS_MS = listOf(10_000L, 30_000L, 60_000L, 300_000L)
         private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "m4b")
+        private const val TAG = "MainActivity"
     }
 }

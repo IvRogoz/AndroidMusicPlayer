@@ -3,7 +3,7 @@
 ### Unreleased
 
 - Migrated the application to Android 16 (compile/target API 36) with current foreground-service, notification, edge-to-edge, and safer-intent handling.
-- Upgraded the build toolchain to Android Gradle Plugin 8.12.3 and Gradle 8.13.
+- Upgraded the build toolchain to Android Gradle Plugin 8.12.3, Gradle 8.14.5, and Kotlin 2.4.0 with JDK 24 support.
 - Fixed transient and delayed audio-focus recovery.
 - Made Stop publish a real stopped state and release playback resources.
 - Added a browsable Android Auto media hierarchy with playable audiobook items.
@@ -12,6 +12,10 @@
 - Closed artwork workers with their UI owners and made the Room database process-scoped.
 - Added validated time-input parsing tests and actionable playback/artwork logging.
 - Corrected the source package version to 1.0.9 (version code 10).
+- Fixed stale artwork races when library or bookmark rows are recycled.
+- Bookmark clip previews now pause the audiobook instead of overlapping it.
+- Stopped playback releases the service when nothing else is bound.
+- Removed template scaffolding and duplicated helper code.
 
 ### v1.0.9 - 2026-03-02
 

@@ -52,6 +52,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
     private var currentGenre: String? = null
     private var currentTrackNumber: Long? = null
     private var isForeground = false
+    @Volatile
     private var isDestroyed = false
     private val audioManager by lazy {
         getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -254,6 +255,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
             }
             releasePlayer()
             updatePlaybackState(PlaybackStateCompat.STATE_STOPPED, position)
+            stopSelf()
         }
 
         override fun onSeekTo(pos: Long) {
@@ -301,7 +303,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         } ?: return mutableListOf()
 
         return directory.listFiles()
-            .filter { it.isDirectory || isAudioDocument(it) }
+            .filter { it.isDirectory || AudioDocuments.isAudioFile(it) }
             .sortedWith(compareBy<DocumentFile>({ !it.isDirectory }, { it.name?.lowercase().orEmpty() }))
             .map { document ->
                 val isDirectory = document.isDirectory
@@ -324,15 +326,6 @@ class PlaybackService : MediaBrowserServiceCompat() {
             .toMutableList()
     }
 
-    private fun isAudioDocument(document: DocumentFile): Boolean {
-        val mimeType = document.type
-        if (mimeType?.startsWith("audio/") == true) {
-            return true
-        }
-        val extension = document.name?.substringAfterLast('.', "")?.lowercase().orEmpty()
-        return extension in AUDIO_EXTENSIONS
-    }
-
     private fun findAudioByTitle(query: String): DocumentFile? {
         val rootUri = preferences.getString(PlaybackPrefs.KEY_TREE_URI, null) ?: return null
         val root = DocumentFile.fromTreeUri(this, Uri.parse(rootUri)) ?: return null
@@ -341,7 +334,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
             directories.removeFirst().listFiles().forEach { document ->
                 when {
                     document.isDirectory -> directories.addLast(document)
-                    isAudioDocument(document) && document.name?.contains(query, ignoreCase = true) == true -> {
+                    AudioDocuments.isAudioFile(document) && document.name?.contains(query, ignoreCase = true) == true -> {
                         return document
                     }
                 }
@@ -583,7 +576,7 @@ class PlaybackService : MediaBrowserServiceCompat() {
         }
         BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
         val options = BitmapFactory.Options().apply {
-            inSampleSize = calculateInSampleSize(bounds, targetSize, targetSize)
+            inSampleSize = BitmapUtils.calculateInSampleSize(bounds, targetSize, targetSize)
             inJustDecodeBounds = false
         }
         val decoded = BitmapFactory.decodeByteArray(data, 0, data.size, options) ?: return null
@@ -602,24 +595,6 @@ class PlaybackService : MediaBrowserServiceCompat() {
                 decoded.recycle()
             }
         }
-    }
-
-    private fun calculateInSampleSize(
-        options: BitmapFactory.Options,
-        reqWidth: Int,
-        reqHeight: Int
-    ): Int {
-        val height = options.outHeight
-        val width = options.outWidth
-        var inSampleSize = 1
-        if (height > reqHeight || width > reqWidth) {
-            var halfHeight = height / 2
-            var halfWidth = width / 2
-            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
-                inSampleSize *= 2
-            }
-        }
-        return inSampleSize
     }
 
     private fun savePlaybackPosition(positionMs: Long) {
@@ -865,7 +840,6 @@ class PlaybackService : MediaBrowserServiceCompat() {
         private const val POSITION_SAVE_INTERVAL_MS = 2_000L
         private const val NORMAL_VOLUME = 1f
         private const val DUCKED_VOLUME = 0.25f
-        private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "m4b")
         private const val TAG = "PlaybackService"
     }
 }

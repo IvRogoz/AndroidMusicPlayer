@@ -389,6 +389,7 @@ class MainActivity : AppCompatActivity() {
         mediaBrowser?.disconnect()
         mediaBrowser = null
         stopProgressUpdates()
+        stopBookmarkClipPlayback()
         if (::artLoader.isInitialized) {
             artLoader.close()
         }
@@ -550,7 +551,7 @@ class MainActivity : AppCompatActivity() {
                         children = buildTreeNodes(file, depth + 1, audioItems)
                     )
                 }
-                isAudioFile(file) -> {
+                AudioDocuments.isAudioFile(file) -> {
                     val audioFile = buildAudioFile(file)
                     audioItems.add(audioFile)
                     AudioTreeNode(
@@ -673,7 +674,7 @@ class MainActivity : AppCompatActivity() {
             val controller = mediaController
             if (controller != null) {
                 val durationMs = currentDurationMs.coerceAtLeast(0L)
-                val clamped = targetMs.coerceIn(0L, durationMs)
+                val clamped = if (durationMs > 0L) targetMs.coerceIn(0L, durationMs) else targetMs
                 controller.transportControls.seekTo(clamped)
                 controller.transportControls.play()
             }
@@ -703,6 +704,10 @@ class MainActivity : AppCompatActivity() {
     private fun startBookmarkClipPlayback(bookmark: BookmarkEntity) {
         stopBookmarkClipPlayback()
         val clipPath = bookmark.audioClipPath ?: return
+        val controller = mediaController
+        if (controller?.playbackState?.state == PlaybackStateCompat.STATE_PLAYING) {
+            controller.transportControls.pause()
+        }
         val player = MediaPlayer()
         bookmarkPlayer = player
         playingBookmarkId = bookmark.id
@@ -748,16 +753,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             timestamp
         }
-    }
-
-    private fun isAudioFile(file: DocumentFile): Boolean {
-        val type = file.type
-        if (type != null && type.startsWith("audio/")) {
-            return true
-        }
-        val name = file.name ?: return false
-        val extension = name.substringAfterLast('.', "").lowercase(Locale.getDefault())
-        return extension in AUDIO_EXTENSIONS
     }
 
     private fun buildAudioFile(file: DocumentFile): AudioFile {
@@ -1448,7 +1443,6 @@ class MainActivity : AppCompatActivity() {
         private val BOOKMARK_CLIP_OPTIONS_MS = listOf(10_000L, 15_000L, 30_000L, 60_000L)
         private val BOOKMARK_CLIP_MIME_TYPES = setOf("audio/mp4a-latm", "audio/aac")
         private val SKIP_OPTIONS_MS = listOf(10_000L, 30_000L, 60_000L, 300_000L)
-        private val AUDIO_EXTENSIONS = setOf("mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "m4b")
         private const val TAG = "MainActivity"
     }
 }

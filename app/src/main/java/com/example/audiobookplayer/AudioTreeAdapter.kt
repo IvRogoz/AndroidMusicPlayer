@@ -54,6 +54,7 @@ class AudioTreeAdapter(
 
             if (node.isFolder) {
                 val isExpanded = expandedUris.contains(node.uri)
+                binding.icon.tag = node.uri
                 binding.icon.setImageResource(
                     if (isExpanded) android.R.drawable.ic_menu_agenda else android.R.drawable.ic_menu_more
                 )

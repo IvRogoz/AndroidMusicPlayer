@@ -80,6 +80,7 @@ class BookmarkTreeAdapter(
                 binding.playToggle.isVisible = false
             } else {
                 binding.expandIndicator.isVisible = false
+                binding.icon.tag = null
                 binding.icon.setImageResource(R.drawable.ic_bookmark)
                 ImageViewCompat.setImageTintList(
                     binding.icon,
@@ -166,27 +167,9 @@ class BookmarkTreeAdapter(
             inJustDecodeBounds = true
         }
         BitmapFactory.decodeFile(path, options)
-        options.inSampleSize = calculateInSampleSize(options, reqSize, reqSize)
+        options.inSampleSize = BitmapUtils.calculateInSampleSize(options, reqSize, reqSize)
         options.inJustDecodeBounds = false
         return BitmapFactory.decodeFile(path, options)
-    }
-
-    private fun calculateInSampleSize(
-        options: BitmapFactory.Options,
-        reqWidth: Int,
-        reqHeight: Int
-    ): Int {
-        val height = options.outHeight
-        val width = options.outWidth
-        var inSampleSize = 1
-        if (height > reqHeight || width > reqWidth) {
-            var halfHeight = height / 2
-            var halfWidth = width / 2
-            while (halfHeight / inSampleSize >= reqHeight && halfWidth / inSampleSize >= reqWidth) {
-                inSampleSize *= 2
-            }
-        }
-        return inSampleSize
     }
 
     companion object {

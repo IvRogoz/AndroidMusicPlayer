@@ -9,6 +9,12 @@
     <string name="album_art">Album art</string>
     <string name="unknown_track">Unknown track</string>
     <string name="library">Library</string>
+    <string name="shelf_empty">No audiobooks in this folder</string>
+    <string name="shelf_back">Back to parent folder</string>
+    <plurals name="shelf_folder_items">
+        <item quantity="one">%1$d item</item>
+        <item quantity="other">%1$d items</item>
+    </plurals>
     <string name="autoplay_next">Autoplay next file</string>
     <string name="back">Back</string>
     <string name="next_track">Next</string>

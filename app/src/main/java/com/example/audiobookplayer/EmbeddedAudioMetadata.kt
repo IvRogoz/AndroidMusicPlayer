@@ -29,13 +29,16 @@ data class EmbeddedAudioMetadata(
                     trackNumber = retriever.value(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)
                         ?.substringBefore('/')
                         ?.toLongOrNull(),
-                    artwork = retriever.embeddedPicture
+                    artwork = retriever.embeddedPicture?.also {
+                        CoverArtProvider.cacheArtwork(context, uri, it)
+                    }
                 )
             } catch (exception: Exception) {
                 Log.w(TAG, "Unable to read embedded metadata from $uri", exception)
                 null
             } finally {
-                retriever.release()
+                runCatching { retriever.release() }
+                    .onFailure { Log.w(TAG, "Unable to release metadata reader", it) }
             }
         }
 

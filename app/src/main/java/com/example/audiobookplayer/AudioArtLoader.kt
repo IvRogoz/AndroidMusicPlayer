@@ -3,7 +3,6 @@ package com.example.audiobookplayer
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -27,6 +26,10 @@ class AudioArtLoader(context: Context) {
     private val closed = AtomicBoolean(false)
 
     fun load(uri: Uri, targetSize: Int, onLoaded: (Bitmap?) -> Unit) {
+        load(uri, targetSize, retry = true, onLoaded = onLoaded)
+    }
+
+    private fun load(uri: Uri, targetSize: Int, retry: Boolean, onLoaded: (Bitmap?) -> Unit) {
         if (closed.get()) {
             return
         }
@@ -44,7 +47,13 @@ class AudioArtLoader(context: Context) {
                 }
                 mainHandler.post {
                     if (!closed.get()) {
-                        onLoaded(bitmap)
+                        if (bitmap == null && retry) {
+                            mainHandler.postDelayed({
+                                load(uri, targetSize, retry = false, onLoaded = onLoaded)
+                            }, 250L)
+                        } else {
+                            onLoaded(bitmap)
+                        }
                     }
                 }
             }
@@ -62,10 +71,8 @@ class AudioArtLoader(context: Context) {
     }
 
     private fun loadEmbeddedArt(uri: Uri, targetSize: Int): Bitmap? {
-        val retriever = MediaMetadataRetriever()
         return try {
-            retriever.setDataSource(context, uri)
-            val art = retriever.embeddedPicture ?: return null
+            val art = CoverArtProvider.readArtwork(context, uri) ?: return null
             val options = BitmapFactory.Options().apply {
                 inJustDecodeBounds = true
             }
@@ -76,8 +83,6 @@ class AudioArtLoader(context: Context) {
         } catch (exception: Exception) {
             Log.w(TAG, "Unable to read embedded artwork from $uri", exception)
             null
-        } finally {
-            retriever.release()
         }
     }
 

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:startColor="#2B2A36"
+                android:endColor="#0A0A0E" />
+        </shape>
+    </item>
+    <item
+        android:drawable="@drawable/ic_placeholder_headphones_small"
+        android:gravity="center" />
+</layer-list>

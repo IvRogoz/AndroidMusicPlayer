@@ -2,6 +2,13 @@
 
 ### Unreleased
 
+- Local build 1.0.10: share persistent embedded-cover caching across the player, shelf, notification, and artwork provider, with bounded read retries and service artwork updates in the activity.
+- Reconcile selection and artwork from service metadata after external track changes and activity recreation.
+- Keep Play available after Stop or load errors, and honor bookmark seeks when restarting a stopped track.
+- Clear playback intent on pause and headphone disconnect even while buffering, and keep position persistence active through rebuffering.
+- Browse Android Auto subfolders through tree-backed documents and advance autoplay in the service using the library's ordering.
+- Handle rejected service starts and satisfy the foreground deadline before delayed audio-focus requests.
+
 - Migrated the application to Android 16 (compile/target API 36) with current foreground-service, notification, edge-to-edge, and safer-intent handling.
 - Upgraded the build toolchain to Android Gradle Plugin 8.12.3, Gradle 8.14.5, and Kotlin 2.4.0 with JDK 24 support.
 - Fixed transient and delayed audio-focus recovery.
@@ -21,7 +28,8 @@
 - Playback failures now show a specific reason (unsupported format, damaged file, unreadable file, or load timeout).
 - Added a 20-second prepare watchdog so stalled files fail with a message instead of spinning forever.
 - Replaced the platform MediaPlayer engine with Media3 ExoPlayer 1.11.1 for more tolerant MP4/M4B parsing and detailed failure reporting.
-- Playback no longer aborts when the system denies a foreground-service start (for example, when restoring a track while the phone is locked); loading continues and the notification retries once the app is back in the foreground.
+- Rejected foreground-service starts leave playback paused and retryable, with an error event instead of an uncaught exception.
+- Redesigned the library drawer as an animated thumbnail shelf with folder navigation, breadcrumb back handling, and staggered entrance animations.
 
 ### v1.0.9 - 2026-03-02
 
